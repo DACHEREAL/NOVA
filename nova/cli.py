@@ -144,6 +144,29 @@ def cmd_run(args):
         print(f"Execution completed ({len(results)} steps).")
 
 
+def cmd_listen(args):
+    print_banner()
+    from nova.sensory.listener import VoiceDaemon
+
+    grounding = HybridGroundingEngine()
+    security = SecurityInterceptor()
+    tts = StreamingTTS()
+    memory = LocalMemoryStore()
+
+    orchestrator = AgentOrchestrator(
+        grounding=grounding,
+        security=security,
+        tts=tts,
+        memory=memory,
+    )
+
+    daemon = VoiceDaemon(orchestrator=orchestrator)
+    try:
+        daemon.start_listening()
+    except KeyboardInterrupt:
+        print("\nVoice listener stopped.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="N.O.V.A. Agent Engine")
     subparsers = parser.add_subparsers(dest="command")
@@ -153,6 +176,9 @@ def main():
 
     # Inspect
     subparsers.add_parser("inspect", help="Inspects active window accessibility tree")
+
+    # Listen (Hands-free voice daemon)
+    subparsers.add_parser("listen", help="Runs continuous hands-free voice listener")
 
     # Run
     run_parser = subparsers.add_parser("run", help="Executes a natural language desktop command")
@@ -167,6 +193,8 @@ def main():
         cmd_status(args)
     elif args.command == "inspect":
         cmd_inspect(args)
+    elif args.command == "listen":
+        cmd_listen(args)
     elif args.command == "run":
         cmd_run(args)
 

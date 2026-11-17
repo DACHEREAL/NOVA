@@ -124,6 +124,15 @@ class AgentOrchestrator:
                 target_app=app_name,
             )
 
+        if lowered.startswith("close ") or lowered.startswith("quit "):
+            app_name = lowered.replace("close ", "").replace("quit ", "").strip()
+            return PlannedAction(
+                step_id=1,
+                thought=f"Terminating application {app_name}",
+                action_type=ActionType.TERMINATE,
+                target_app=app_name,
+            )
+
         return None
 
     def _plan_step(
@@ -165,6 +174,8 @@ class AgentOrchestrator:
     def _dispatch_action(self, action: PlannedAction) -> ExecutionResult:
         if action.action_type == ActionType.LAUNCH_APP and action.target_app:
             return self._launch_app_native(action.target_app, action.step_id)
+        elif action.action_type == ActionType.TERMINATE and action.target_app:
+            return self._close_app_native(action.target_app, action.step_id)
         elif action.action_type == ActionType.RESIZE_WINDOW:
             windows = self.grounding.list_windows()
             if len(windows) >= 2:
@@ -203,6 +214,35 @@ class AgentOrchestrator:
                 success=False,
                 action_type=ActionType.LAUNCH_APP,
                 output_message=f"Failed to launch '{app_name}': {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
+            )
+
+    def _close_app_native(self, app_name: str, step_id: int) -> ExecutionResult:
+        import subprocess
+        start_time = time.perf_counter()
+        try:
+            if self.grounding.os_type.value == "macos":
+                script = f'tell application "{app_name}" to quit'
+                subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+            elif self.grounding.os_type.value == "windows":
+                subprocess.run(["taskkill", "/IM", f"{app_name}.exe", "/F"], check=True)
+            else:
+                subprocess.run(["pkill", "-f", app_name], check=True)
+            return ExecutionResult(
+                step_id=step_id,
+                success=True,
+                action_type=ActionType.TERMINATE,
+                output_message=f"Closed application '{app_name}'",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                state_mutated=True,
+            )
+        except Exception as e:
+            return ExecutionResult(
+                step_id=step_id,
+                success=False,
+                action_type=ActionType.TERMINATE,
+                output_message=f"Failed to close '{app_name}': {e}",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 error=str(e),
             )
