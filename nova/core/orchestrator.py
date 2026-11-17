@@ -55,11 +55,27 @@ class AgentOrchestrator:
         logger.info(f"Received user intent: '{intent}'")
         history: List[ExecutionResult] = []
 
+        # Determine contextual active application
+        active_app = None
+        try:
+            active_win = self.grounding.get_active_window()
+            if active_win and active_win.app_name:
+                active_app = active_win.app_name
+        except Exception:
+            pass
+
+        # If active window is terminal/IDE, infer from recent user interaction
+        if not active_app or any(x in active_app.lower() for x in ["terminal", "iterm", "zsh", "bash", "antigravity", "nova", "code"]):
+            last_act = self.habits.get_last_interaction()
+            if last_act:
+                last_params = last_act.get("parameters", {})
+                active_app = last_params.get("app") or last_params.get("app_name") or last_params.get("target_app") or active_app
+
         # 1. Primary: Neural Local AI Brain (LLaMA 3.2 / Ollama / LM Studio)
         if self.ai_engine.is_available:
             try:
                 habits_ctx = self.habits.get_context_prompt()
-                ai_result = self.ai_engine.reason_and_plan(intent, habits_context=habits_ctx)
+                ai_result = self.ai_engine.reason_and_plan(intent, habits_context=habits_ctx, current_app=active_app)
                 if ai_result:
                     thought, planned_actions = ai_result
                     if planned_actions:
@@ -82,7 +98,7 @@ class AgentOrchestrator:
                 logger.warning(f"AI Brain execution error, falling back to reflex triage: {e}")
 
         # 2. Fast Triage / Direct Action Router (<10ms Reflex Fallback)
-        direct_action = self._triage_fast_intent(intent)
+        direct_action = self._triage_fast_intent(intent, active_app=active_app)
         if direct_action:
             logger.info("Executing via Fast Triage Path (<30ms)")
             result = self._dispatch_action(direct_action)
@@ -146,9 +162,9 @@ class AgentOrchestrator:
 
         return history
 
-    def _triage_fast_intent(self, intent: str) -> Optional[PlannedAction]:
+    def _triage_fast_intent(self, intent: str, active_app: Optional[str] = None) -> Optional[PlannedAction]:
         """Resolves conversational human speech in ANY word order to precise OS skills."""
-        resolved = NaturalLanguageIntentResolver.resolve(intent)
+        resolved = NaturalLanguageIntentResolver.resolve(intent, active_app=active_app)
         if not resolved:
             return None
 

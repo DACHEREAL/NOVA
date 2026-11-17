@@ -766,9 +766,10 @@ class DesktopSkills:
 
     @staticmethod
     def send_message_flow(app: str, contact: str, message: str) -> ExecutionResult:
-        """Brings messaging app to front, searches contact, and sends the message."""
+        """Brings messaging app to front, searches contact, reliably opens chat, and sends the message."""
         start_time = time.perf_counter()
         target_app = "WhatsApp" if app.lower() == "whatsapp" else app.title()
+        clean_contact = re.sub(r"\b(contact|person|user)\b", "", contact, flags=re.IGNORECASE).strip()
 
         is_fresh = False
         if sys.platform == "darwin":
@@ -783,27 +784,71 @@ class DesktopSkills:
                 pass
 
         DesktopSkills.focus_app(target_app)
-        time.sleep(1.2 if is_fresh else 0.5)
+        time.sleep(1.2 if is_fresh else 0.4)
 
         if sys.platform == "darwin":
-            # In WhatsApp, Cmd+F focuses search bar
+            # 1. Focus search bar via Cmd+F
             DesktopSkills.press_hotkey(["command", "f"])
-            time.sleep(0.3)
-            # Select all and replace with contact query
+            time.sleep(0.25)
+
+            # 2. Clear any existing search text
             DesktopSkills.press_hotkey(["command", "a"])
             time.sleep(0.1)
-            DesktopSkills.type_text(contact, press_enter=True)
-            time.sleep(0.5)
-            # Press return to open contact chat
-            DesktopSkills.press_hotkey(["return"])
+
+            # 3. Type contact name WITHOUT pressing enter (must allow search query to run asynchronously)
+            DesktopSkills.type_text(clean_contact, press_enter=False)
+
+            # 4. Wait for WhatsApp to search contacts and populate results in the sidebar
+            time.sleep(0.6)
+
+            # 5. Dual-strategy: Navigate down to first search result and hit Return to open chat
+            # In WhatsApp for Mac: Down arrow selects first item in search list, Return opens it
+            open_script = '''
+            tell application "System Events"
+                tell process "WhatsApp"
+                    set frontmost to true
+                    key code 125 -- Down arrow to highlight top contact
+                    delay 0.2
+                    key code 36  -- Return to open chat conversation
+                    delay 0.3
+                end tell
+            end tell
+            '''
+            subprocess.run(["osascript", "-e", open_script], capture_output=True)
             time.sleep(0.4)
-            # Type message into chat box using clipboard for 100% fidelity and send
+
+            # 6. Physical click fallback on first search row if coordinates are available
+            try:
+                pos_script = '''
+                tell application "System Events"
+                    tell process "WhatsApp"
+                        set {wx, wy} to position of window 1
+                        set {ww, wh} to size of window 1
+                        return "" & wx & "," & wy & "," & ww & "," & wh
+                    end tell
+                end tell
+                '''
+                pos_res = subprocess.run(["osascript", "-e", pos_script], capture_output=True, text=True)
+                if pos_res.returncode == 0 and "," in pos_res.stdout:
+                    parts = [float(p.strip()) for p in pos_res.stdout.strip().split(",")]
+                    wx, wy, ww, wh = parts[0], parts[1], parts[2], parts[3]
+                    # Click first search result (sidebar width ~350px, row height ~70px)
+                    DesktopSkills.physical_click(wx + 150, wy + 140)
+                    time.sleep(0.3)
+                    # Click message input box at bottom of window
+                    DesktopSkills.physical_click(wx + (ww / 2), wy + wh - 40)
+                    time.sleep(0.2)
+            except Exception:
+                pass
+
+            # 7. Type message into the active conversation and hit Return to send
             DesktopSkills.type_text(message, press_enter=True, use_clipboard=True)
+
             return ExecutionResult(
                 step_id=1,
                 success=True,
                 action_type=ActionType.TYPE_TEXT,
-                output_message=f"Sent message to '{contact}' on {target_app}: \"{message}\"",
+                output_message=f"Sent message to '{clean_contact}' on {target_app}: \"{message}\"",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 state_mutated=True,
             )

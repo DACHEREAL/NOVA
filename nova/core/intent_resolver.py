@@ -21,7 +21,7 @@ class NaturalLanguageIntentResolver:
     """Robust, flexible NLP parser understanding human speech in any word order."""
 
     @classmethod
-    def resolve(cls, utterance: str) -> Optional[ResolvedIntent]:
+    def resolve(cls, utterance: str, active_app: Optional[str] = None) -> Optional[ResolvedIntent]:
         text = utterance.strip()
         # Clean leading wake word if present
         text = re.sub(r"^(hey\s+)?(nova|no\s*a|no\s*v|no)[,;\s]+", "", text, flags=re.IGNORECASE).strip()
@@ -102,42 +102,126 @@ class NaturalLanguageIntentResolver:
                 )
 
         # -------------------------------------------------------------
-        # 3. CHAINED IN-APP SEARCH & MESSAGE
-        # E.g. "search frosty in whatsapp and type hi", "in whatsapp search frosty and send hi",
-        # "open whatsapp and search frosty and type hi", "send frosty a message on whatsapp saying hi"
+        # 3. CHAINED & CONTEXTUAL IN-APP SEARCH & MESSAGE
+        # E.g. "search frosty in whatsapp and type hi", "open whatsapp and send hi to frosty",
+        # "open whatsapp and send frosty hi", "search for frosty contact and type hi", "send hi to frosty"
         # -------------------------------------------------------------
-        m_chain = (
-            re.search(
-                r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+and\s+(?:type|send|say|message)\s+(?P<msg>.+)",
-                text_clean, flags=re.IGNORECASE
-            )
-            or re.search(
-                r"(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
-                text_clean, flags=re.IGNORECASE
-            )
-            or re.search(
-                r"(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
-                text_clean, flags=re.IGNORECASE
-            )
-            or re.search(
-                r"(?:send|text|message|tell)\s+(?:(?:to|a\s+message\s+to)\s+)?(?P<contact>[a-zA-Z0-9 ]+?)\s+(?:a\s+message\s+)?(?:on|in)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:saying|that|with)?\s*(?P<msg>.+)",
-                text_clean, flags=re.IGNORECASE
-            )
-            or re.search(
-                r"(?:send|text|message|tell)\s+(?:(?:to|a\s+message\s+to)\s+)?(?P<contact>[a-zA-Z0-9 ]+?)\s+(?:saying|that|with)?\s*(?P<msg>.+?)\s+(?:on|in)\s+(?P<app>whatsapp|slack|telegram|messages)$",
-                text_clean, flags=re.IGNORECASE
-            )
+        # 3A: "open <app> and send <msg> to <contact>"
+        m_open_send_to = re.search(
+            r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:send|text|message|type)\s+(?P<msg>.+?)\s+to\s+(?P<contact>[a-zA-Z0-9 ]+)",
+            text_clean, flags=re.IGNORECASE
         )
-        if m_chain:
-            app = m_chain.group("app").strip()
-            contact = m_chain.group("contact").strip()
-            raw_msg = m_chain.group("msg").strip()
-            msg = re.sub(r"^(a\s+message\s+(saying|that|with)\s+|saying\s+|that\s+)", "", raw_msg, flags=re.IGNORECASE).strip()
+        if m_open_send_to:
+            app = m_open_send_to.group("app").strip()
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_open_send_to.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_open_send_to.group("msg").strip()
             return ResolvedIntent(
                 "send_message",
                 0.98,
                 {"app": app, "contact": contact, "message": msg},
                 f"Opening {app.title()}, searching '{contact}', and sending '{msg}'."
+            )
+
+        # 3B: "open <app> and send <contact> <msg>"
+        m_open_send = re.search(
+            r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:send|text|message|type)\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+(?P<msg>.+)",
+            text_clean, flags=re.IGNORECASE
+        )
+        if m_open_send and not m_open_send.group("contact").lower().startswith("to "):
+            app = m_open_send.group("app").strip()
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_open_send.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_open_send.group("msg").strip()
+            return ResolvedIntent(
+                "send_message",
+                0.98,
+                {"app": app, "contact": contact, "message": msg},
+                f"Opening {app.title()}, searching '{contact}', and sending '{msg}'."
+            )
+
+        # 3C: "open <app> and search [for] <contact> and (type|send) <msg>"
+        m_open_search = re.search(
+            r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message)\s+(?P<msg>.+)",
+            text_clean, flags=re.IGNORECASE
+        )
+        if m_open_search:
+            app = m_open_search.group("app").strip()
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_open_search.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_open_search.group("msg").strip()
+            return ResolvedIntent(
+                "send_message",
+                0.98,
+                {"app": app, "contact": contact, "message": msg},
+                f"Opening {app.title()}, searching '{contact}', and sending '{msg}'."
+            )
+
+        # 3D: "search [for] <contact> in/on <app> and (type|send) <msg>"
+        m_search_in = (
+            re.search(
+                r"(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+                text_clean, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+                text_clean, flags=re.IGNORECASE
+            )
+        )
+        if m_search_in:
+            app = m_search_in.group("app").strip()
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_search_in.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_search_in.group("msg").strip()
+            return ResolvedIntent(
+                "send_message",
+                0.98,
+                {"app": app, "contact": contact, "message": msg},
+                f"In {app.title()}, searching '{contact}', and sending '{msg}'."
+            )
+
+        # 3E: Contextual: "search for <contact> [contact] and type/send <msg>" (when in WhatsApp or messaging app)
+        m_contextual_search = re.search(
+            r"(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+            text_clean, flags=re.IGNORECASE
+        )
+        if m_contextual_search:
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_contextual_search.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_contextual_search.group("msg").strip()
+            target_app = active_app or "WhatsApp"
+            return ResolvedIntent(
+                "send_message",
+                0.98,
+                {"app": target_app, "contact": contact, "message": msg},
+                f"In {target_app}, searching '{contact}', and sending '{msg}'."
+            )
+
+        # 3F: Contextual: "send <msg> to <contact>" without app name
+        m_send_to = re.search(
+            r"(?:send|text|message|type)\s+(?P<msg>.+?)\s+to\s+(?P<contact>[a-zA-Z0-9 ]+)",
+            text_clean, flags=re.IGNORECASE
+        )
+        if m_send_to and not any(w in tokens for w in ["search", "find", "google"]):
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_send_to.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_send_to.group("msg").strip()
+            target_app = active_app or "WhatsApp"
+            return ResolvedIntent(
+                "send_message",
+                0.95,
+                {"app": target_app, "contact": contact, "message": msg},
+                f"Sending '{msg}' to '{contact}' in {target_app}."
+            )
+
+        # 3G: Contextual: "send <contact> <msg>" (e.g. "send frosty hi", "text frosty I will be late")
+        m_send_contact = re.search(
+            r"^(?:send|text|message|tell)\s+(?P<contact>[a-zA-Z0-9]+)\s+(?P<msg>.+)",
+            text_clean, flags=re.IGNORECASE
+        )
+        if m_send_contact and not any(w in tokens for w in ["search", "find", "google", "to"]):
+            contact = re.sub(r"\b(contact|person|user)\b", "", m_send_contact.group("contact"), flags=re.IGNORECASE).strip()
+            msg = m_send_contact.group("msg").strip()
+            target_app = active_app or "WhatsApp"
+            return ResolvedIntent(
+                "send_message",
+                0.95,
+                {"app": target_app, "contact": contact, "message": msg},
+                f"Sending '{msg}' to '{contact}' in {target_app}."
             )
 
         # -------------------------------------------------------------

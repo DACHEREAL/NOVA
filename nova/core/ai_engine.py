@@ -36,6 +36,9 @@ AVAILABLE OS SKILLS:
 - scroll(direction, amount=5): Scrolls page ("up"|"down").
 - click_semantic(element, app=None): Clicks a UI button or element by name (e.g. element="create", app="Microsoft Word").
 
+CURRENT APPLICATION & SYSTEM STATE:
+- Active Foreground App: {current_app}
+
 LEARNED USER HABITS & PROFILE:
 {habits_context}
 
@@ -43,7 +46,8 @@ RULES:
 1. Always output strictly valid JSON with keys "thought" and "plan".
 2. "plan" must be a list of action objects with "action" and "parameters".
 3. Extract only the real search term or payload, stripping conversational fillers ("please", "can you", "i want you to", "type", "just").
-4. Never output markdown code fences, commentary, or text outside the JSON object.
+4. If the user refers to an action without naming an app (e.g. "search for frosty contact and type hi", "send hi to frosty"), use the Active Foreground App (e.g. "WhatsApp").
+5. Never output markdown code fences, commentary, or text outside the JSON object.
 
 FEW-SHOT EXAMPLES:
 User: "search for mr beast on youtube"
@@ -64,8 +68,17 @@ User: "open facebook on chrome"
 User: "open fb chrome"
 {{"thought": "Open Facebook in Google Chrome", "plan": [{{"action": "open_website", "parameters": {{"site": "facebook"}}}}]}}
 
+User: "open whatsapp and send hi to frosty"
+{{"thought": "Open WhatsApp, locate Frosty, and send 'hi'", "plan": [{{"action": "send_message", "parameters": {{"app": "WhatsApp", "contact": "Frosty", "message": "hi"}}}}]}}
+
 User: "search frosty in whatsapp and type hi"
 {{"thought": "Send WhatsApp message to Frosty saying 'hi'", "plan": [{{"action": "send_message", "parameters": {{"app": "WhatsApp", "contact": "Frosty", "message": "hi"}}}}]}}
+
+User: "search for frosty contact and type hi"
+{{"thought": "Search contact Frosty in active app and send message 'hi'", "plan": [{{"action": "send_message", "parameters": {{"app": "WhatsApp", "contact": "Frosty", "message": "hi"}}}}]}}
+
+User: "send hi to frosty"
+{{"thought": "Send message 'hi' to Frosty in WhatsApp", "plan": [{{"action": "send_message", "parameters": {{"app": "WhatsApp", "contact": "Frosty", "message": "hi"}}}}]}}
 
 User: "tell frosty on whatsapp that I will be late"
 {{"thought": "Send WhatsApp message to Frosty", "plan": [{{"action": "send_message", "parameters": {{"app": "WhatsApp", "contact": "Frosty", "message": "I will be late"}}}}]}}
@@ -220,6 +233,7 @@ class LocalAIEngine:
         self,
         user_utterance: str,
         habits_context: str = "",
+        current_app: Optional[str] = None,
     ) -> Optional[Tuple[str, List[PlannedAction]]]:
         """Translates arbitrary unstructured human speech into structured planned actions using the local LLM.
 
@@ -229,7 +243,8 @@ class LocalAIEngine:
             return None
 
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            habits_context=habits_context or "No recorded habits yet."
+            habits_context=habits_context or "No recorded habits yet.",
+            current_app=current_app or "Desktop",
         )
 
         try:
