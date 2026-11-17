@@ -105,10 +105,10 @@ class VoiceDaemon:
 
         console.print(f"  [yellow]Heard:[/yellow] [italic]\"{transcript}\"[/italic]")
 
-        # Strip wake-word if present
-        clean_intent = re.sub(r"^(hey\s+)?nova[,;\s]*", "", transcript, flags=re.IGNORECASE).strip()
+        # Strip wake-word variations (Nova, No a, No, Hey Nova)
+        clean_intent = re.sub(r"^(hey\s+)?(nova|no\s*a|no\s*v|no)[,;\s]+", "", transcript, flags=re.IGNORECASE).strip()
         if not clean_intent:
-            return
+            clean_intent = transcript.strip()
 
         console.print(f"  [bold cyan]Executing:[/bold cyan] {clean_intent}")
 
@@ -126,7 +126,13 @@ class VoiceDaemon:
         whisper = self._get_whisper()
         if whisper:
             try:
-                segments, info = whisper.transcribe(audio_data, beam_size=1, language="en")
+                # Provide initial_prompt to bias Whisper towards assistant vocabulary
+                segments, info = whisper.transcribe(
+                    audio_data,
+                    beam_size=1,
+                    language="en",
+                    initial_prompt="Nova, open Safari, close WhatsApp, Notes, Finder, arrange windows.",
+                )
                 text = " ".join([seg.text for seg in segments]).strip()
                 if text:
                     return text
