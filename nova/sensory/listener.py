@@ -95,10 +95,19 @@ class VoiceDaemon:
         console = Console()
         self.running = True
 
+        ai_status = (
+            f"[bold green]● Active[/bold green] ([white]{self.orchestrator.ai_engine.active_model}[/white])"
+            if self.orchestrator.ai_engine.is_available
+            else "[yellow]Standby / Reflex Router[/yellow] [dim](Run 'ollama run llama3.2' for full neural AI)[/dim]"
+        )
+        habits_count = len(self.orchestrator.habits.recent_interactions)
+
         console.print(Panel(
-            f"[bold cyan]✦ N.O.V.A. Continuous Voice Daemon Active[/bold cyan]\n"
-            f"[dim]Auto-detects earphones/AirPods & dynamically falls back on disconnect.[/dim]\n"
-            f"[dim]Speak: 'Nova, open Safari' or 'Nova, close WhatsApp' (Ctrl+C to stop).[/dim]",
+            f"[bold cyan]✦ N.O.V.A. Autonomous Desktop OS Agent Active[/bold cyan]\n\n"
+            f"🧠 [bold]Local AI Brain (LLaMA):[/bold] {ai_status}\n"
+            f"📊 [bold]Habit Learning Memory:[/bold] [green]{habits_count} interactions learned[/green]\n"
+            f"🎙️ [bold]Adaptive Audio:[/bold] Dynamically switches between Earphones & Mac Mic\n\n"
+            f"[dim]Speak naturally: 'open fb on chrome', 'tell frosty I'll be late on whatsapp', or 'type help in dictionary'.[/dim]",
             border_style="cyan"
         ))
 

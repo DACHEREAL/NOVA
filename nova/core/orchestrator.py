@@ -19,6 +19,8 @@ from nova.sensory.tts import StreamingTTS
 from nova.memory.lancedb_store import LocalMemoryStore
 from nova.core.skills import DesktopSkills
 from nova.core.intent_resolver import NaturalLanguageIntentResolver
+from nova.core.ai_engine import LocalAIEngine
+from nova.memory.habit_learner import HabitMemoryEngine
 
 logger = logging.getLogger("nova.core.orchestrator")
 
@@ -33,12 +35,16 @@ class AgentOrchestrator:
         tts: StreamingTTS,
         memory: LocalMemoryStore,
         max_steps: int = 12,
+        ai_engine: Optional[LocalAIEngine] = None,
+        habits: Optional[HabitMemoryEngine] = None,
     ):
         self.grounding = grounding
         self.security = security
         self.tts = tts
         self.memory = memory
         self.max_steps = max_steps
+        self.habits = habits or HabitMemoryEngine()
+        self.ai_engine = ai_engine or LocalAIEngine()
 
     def execute_user_intent(
         self,
@@ -49,7 +55,33 @@ class AgentOrchestrator:
         logger.info(f"Received user intent: '{intent}'")
         history: List[ExecutionResult] = []
 
-        # 1. Fast Triage / Direct Action Router
+        # 1. Primary: Neural Local AI Brain (LLaMA 3.2 / Ollama / LM Studio)
+        if self.ai_engine.is_available:
+            try:
+                habits_ctx = self.habits.get_context_prompt()
+                ai_result = self.ai_engine.reason_and_plan(intent, habits_context=habits_ctx)
+                if ai_result:
+                    thought, planned_actions = ai_result
+                    if planned_actions:
+                        logger.info(f"AI Brain ({self.ai_engine.active_model}) generated plan with {len(planned_actions)} step(s)")
+                        for plan in planned_actions:
+                            res = self._dispatch_action(plan)
+                            history.append(res)
+                            if on_step_update:
+                                on_step_update(plan, res)
+                            self.habits.record_interaction(
+                                raw_utterance=intent,
+                                action_type=plan.parameters.get("skill", plan.action_type.value),
+                                parameters=plan.parameters,
+                                thought=thought,
+                                success=res.success,
+                            )
+                        self.tts.speak_sync("Done.")
+                        return history
+            except Exception as e:
+                logger.warning(f"AI Brain execution error, falling back to reflex triage: {e}")
+
+        # 2. Fast Triage / Direct Action Router (<10ms Reflex Fallback)
         direct_action = self._triage_fast_intent(intent)
         if direct_action:
             logger.info("Executing via Fast Triage Path (<30ms)")
@@ -57,6 +89,13 @@ class AgentOrchestrator:
             history.append(result)
             if on_step_update:
                 on_step_update(direct_action, result)
+            self.habits.record_interaction(
+                raw_utterance=intent,
+                action_type=direct_action.parameters.get("skill", direct_action.action_type.value),
+                parameters=direct_action.parameters,
+                thought=direct_action.thought,
+                success=result.success,
+            )
             self.tts.speak_sync("Done.")
             return history
 
