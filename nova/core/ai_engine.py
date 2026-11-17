@@ -151,7 +151,7 @@ class LocalAIEngine:
         self,
         base_url: Optional[str] = None,
         preferred_model: Optional[str] = None,
-        timeout: float = 15.0,
+        timeout: float = 25.0,
     ):
         self.base_url = (base_url or os.environ.get("NOVA_LLM_URL", "http://127.0.0.1:11434")).rstrip("/")
         self.preferred_model = preferred_model or os.environ.get("NOVA_LLM_MODEL", "llama3.2")
@@ -628,7 +628,7 @@ class LocalAIEngine:
                     PlannedAction(
                         step_id=idx,
                         thought=thought,
-                        action_type=action_type_map.get(act_name, ActionType.FOCUS),
+                        action_type=action_type_map.get(act_name, ActionType.CUSTOM),
                         parameters=params_with_skill,
                     )
                 )

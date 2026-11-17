@@ -49,6 +49,7 @@ class ActionType(str, enum.Enum):
     EXECUTE_SHELL = "execute_shell"
     QUERY_KNOWLEDGE = "query_knowledge"
     TERMINATE = "terminate"
+    CUSTOM = "custom"
 
 
 class BoundingBox(BaseModel):

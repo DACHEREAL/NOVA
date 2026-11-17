@@ -4,8 +4,6 @@ Implements real OS-level automation for:
 - Web navigation & search (YouTube, Google, Docs)
 - Deep application targeting & auto-focus
 - Native typing, keyboard shortcuts, and text entry
-- Dictionary word lookup via dict:// URL scheme
-- WhatsApp messaging flow (search contact → open chat → type message → send)
 - Semantic UI element finding & physical clicking
 - File system search and file transfer
 """
@@ -29,13 +27,9 @@ logger = logging.getLogger("nova.core.skills")
 class DesktopSkills:
     """Universal cross-app execution skills running on native OS APIs."""
 
-    # =========================================================================
-    # WEB SEARCH
-    # =========================================================================
-
     @staticmethod
     def open_web_search(platform_name: str, query: str) -> ExecutionResult:
-        """Opens search queries directly in the default browser."""
+        """Opens search queries directly in the user's default browser (YouTube, Google, etc.)."""
         start_time = time.perf_counter()
         encoded_query = urllib.parse.quote_plus(query.strip())
 
@@ -45,6 +39,7 @@ class DesktopSkills:
             "reddit": f"https://www.reddit.com/search/?q={encoded_query}",
             "github": f"https://github.com/search?q={encoded_query}",
         }
+
         url = urls.get(platform_name.lower(), f"https://www.google.com/search?q={encoded_query}")
 
         try:
@@ -55,25 +50,28 @@ class DesktopSkills:
             else:
                 subprocess.Popen(["xdg-open", url])
 
+            latency = (time.perf_counter() - start_time) * 1000
             return ExecutionResult(
-                step_id=1, success=True, action_type=ActionType.LAUNCH_APP,
+                step_id=1,
+                success=True,
+                action_type=ActionType.LAUNCH_APP,
                 output_message=f"Opened {platform_name.title()} search for '{query}'",
-                latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                latency_ms=latency,
+                state_mutated=True,
             )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.LAUNCH_APP,
+                step_id=1,
+                success=False,
+                action_type=ActionType.LAUNCH_APP,
                 output_message=f"Failed to open web search: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # WEBSITE OPENING
-    # =========================================================================
 
     @staticmethod
     def open_website_in_browser(site_name: str, browser: str = "Google Chrome") -> ExecutionResult:
-        """Resolves any website name (facebook, fb, twitter, etc.) and opens it in Chrome."""
+        """Resolves any website or web app (facebook, fb, twitter, amazon, etc.) and opens it in Chrome/Safari."""
         clean = site_name.strip().lower()
         site_map = {
             "fb": "https://www.facebook.com",
@@ -102,17 +100,6 @@ class DesktopSkills:
             "drive": "https://drive.google.com",
             "google drive": "https://drive.google.com",
             "wikipedia": "https://www.wikipedia.org",
-            "pinterest": "https://www.pinterest.com",
-            "twitch": "https://www.twitch.tv",
-            "tiktok": "https://www.tiktok.com",
-            "discord": "https://discord.com",
-            "notion": "https://www.notion.so",
-            "figma": "https://www.figma.com",
-            "canva": "https://www.canva.com",
-            "meet": "https://meet.google.com",
-            "google meet": "https://meet.google.com",
-            "maps": "https://maps.google.com",
-            "google maps": "https://maps.google.com",
         }
 
         if clean in site_map:
@@ -124,87 +111,117 @@ class DesktopSkills:
         else:
             url = f"https://www.{clean}.com"
 
-        return DesktopSkills.navigate_active_tab(url)
-
-    # =========================================================================
-    # DICTIONARY LOOKUP
-    # =========================================================================
-
-    @staticmethod
-    def lookup_dictionary(word: str) -> ExecutionResult:
-        """Looks up a word definition using the macOS dict:// URL scheme."""
         start_time = time.perf_counter()
-
-        # Clean the word — strip filler, verbs, prepositions
-        clean_word = word.strip().strip(".?!,'\"")
-        clean_word = re.sub(
-            r"\b(what is the meaning of|what does|meaning of|definition of|define|search for|search|"
-            r"look up|type|just|open|and|in the dictionary|on the dictionary|in dictionary|on dictionary|"
-            r"the dictionary|dictionary|mean|word|the|a|for|of|is|what)\b",
-            " ", clean_word, flags=re.IGNORECASE,
-        )
-        clean_word = re.sub(r"\s+", " ", clean_word).strip()
-        if not clean_word:
-            clean_word = "help"  # Safe fallback
+        target_browser = "Google Chrome"
+        if "safari" in browser.lower():
+            target_browser = "Safari"
 
         try:
             if sys.platform == "darwin":
-                # Strategy 1: dict:// URL scheme (opens Dictionary.app directly to the word)
+                subprocess.Popen(["open", "-a", target_browser, url])
+            elif sys.platform == "win32":
+                subprocess.Popen(["start", target_browser, url], shell=True)
+            else:
+                subprocess.Popen(["xdg-open", url])
+
+            return ExecutionResult(
+                step_id=1,
+                success=True,
+                action_type=ActionType.LAUNCH_APP,
+                output_message=f"Opened {clean} ({url}) in {target_browser}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                state_mutated=True,
+            )
+        except Exception as e:
+            return DesktopSkills.navigate_active_tab(url)
+
+    @staticmethod
+    def lookup_dictionary(word: str) -> ExecutionResult:
+        """Looks up a word definition using the dict:// URL scheme, AppleScript, or Google fallback."""
+        start_time = time.perf_counter()
+        clean_word = word.strip().strip(".?!,'\"")
+        clean_word = re.sub(
+            r"\b(what is the meaning of|what does|meaning of|definition of|define|search for|search|look up|type|just|open|and|in the dictionary|on the dictionary|in dictionary|on dictionary|the dictionary|dictionary|mean|word|the|a|for|of|is|what)\b",
+            " ",
+            clean_word,
+            flags=re.IGNORECASE,
+        )
+        clean_word = re.sub(r"\s+", " ", clean_word).strip()
+        if not clean_word:
+            clean_word = "help"
+
+        try:
+            if sys.platform == "darwin":
+                # Strategy 1: Try the dict:// URL scheme (opens Dictionary.app directly to the word)
                 dict_url = f"dict://{urllib.parse.quote(clean_word)}"
                 res = subprocess.run(["open", dict_url], capture_output=True, timeout=3)
                 if res.returncode == 0:
                     return ExecutionResult(
-                        step_id=1, success=True, action_type=ActionType.LAUNCH_APP,
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.LAUNCH_APP,
                         output_message=f"Looked up '{clean_word}' in Dictionary",
-                        latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
                     )
 
-                # Strategy 2: Open Dictionary.app + search manually
+                # Strategy 2: Open Dictionary.app directly and search via clipboard
                 try:
                     subprocess.run(["open", "-a", "Dictionary"], capture_output=True, timeout=3)
-                    time.sleep(0.5)
+                    time.sleep(0.4)
+                    # Copy word to clipboard and paste into Dictionary search bar
+                    p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+                    p.communicate(clean_word.encode("utf-8"))
+                    time.sleep(0.05)
                     script = '''
-                    tell application "Dictionary" to activate
-                    delay 0.3
+                    tell application "Dictionary"
+                        activate
+                    end tell
+                    delay 0.2
                     tell application "System Events"
                         tell process "Dictionary"
                             set frontmost to true
                             keystroke "f" using command down
                             delay 0.1
                             keystroke "a" using command down
+                            delay 0.05
+                            keystroke "v" using command down
+                            delay 0.05
+                            key code 36
                         end tell
                     end tell
                     '''
                     subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
-                    time.sleep(0.15)
-                    DesktopSkills.type_text(clean_word, press_enter=True)
                     return ExecutionResult(
-                        step_id=1, success=True, action_type=ActionType.LAUNCH_APP,
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.LAUNCH_APP,
                         output_message=f"Looked up '{clean_word}' in Dictionary",
-                        latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
                     )
                 except Exception:
                     pass
 
-                # Strategy 3: Fallback to Google define
+                # Strategy 3: Fallback to Google define search in browser
+                logger.info(f"Dictionary app unavailable, falling back to Google define for '{clean_word}'")
                 google_url = f"https://www.google.com/search?q=define+{urllib.parse.quote_plus(clean_word)}"
                 return DesktopSkills.navigate_active_tab(google_url)
             else:
                 return DesktopSkills.open_web_search("google", f"define {clean_word}")
         except Exception as e:
+            # Ultimate fallback: Google search
+            logger.warning(f"Dictionary lookup failed for '{clean_word}': {e}")
             google_url = f"https://www.google.com/search?q=define+{urllib.parse.quote_plus(clean_word)}"
             return DesktopSkills.navigate_active_tab(google_url)
 
-    # =========================================================================
-    # APP FOCUS
-    # =========================================================================
-
     @staticmethod
     def focus_app(app_name: str) -> bool:
-        """Brings the designated application to the foreground."""
+        """Brings the designated application window to the foreground."""
         clean_name = app_name.strip()
         try:
             if sys.platform == "darwin":
+                # Check for standard app aliases
                 alias_map = {
                     "word": "Microsoft Word",
                     "google word": "Microsoft Word",
@@ -232,7 +249,11 @@ class DesktopSkills:
                     "music": "Music",
                 }
                 target = alias_map.get(clean_name.lower(), clean_name)
-                script = f'tell application "{target}" to activate'
+                script = f'''
+                tell application "{target}"
+                    activate
+                end tell
+                '''
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=3)
                 if res.returncode == 0:
                     time.sleep(0.3)
@@ -248,22 +269,21 @@ class DesktopSkills:
             logger.warning(f"Failed to focus app '{clean_name}': {e}")
         return False
 
-    # =========================================================================
-    # TEXT TYPING
-    # =========================================================================
-
     @staticmethod
     def type_text(text: str, press_enter: bool = False, use_clipboard: bool = False) -> ExecutionResult:
-        """Types text into the currently focused field. Uses clipboard paste for reliability."""
+        """Types text cleanly into the currently focused input field.
+
+        For sentences, punctuation, or dictation, uses pbcopy + Cmd+V for 100% fidelity.
+        """
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
-                # Use clipboard for long text, punctuation, or when explicitly requested
+                # For dictation, sentences, or special characters, use clipboard paste for 100% reliability
                 if use_clipboard or len(text) > 15 or any(c in text for c in ['"', "'", "\n", "\\", ",", ";"]):
                     p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
                     p.communicate(text.encode("utf-8"))
                     time.sleep(0.04)
-                    enter_cmd = "key code 36" if press_enter else ""
+                    enter_cmd = 'key code 36' if press_enter else ''
                     script = f'''
                     tell application "System Events"
                         keystroke "v" using command down
@@ -273,7 +293,7 @@ class DesktopSkills:
                     subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
                 else:
                     escaped = text.replace('"', '\\"')
-                    enter_cmd = "key code 36" if press_enter else ""
+                    enter_cmd = 'key code 36' if press_enter else ''
                     script = f'''
                     tell application "System Events"
                         keystroke "{escaped}"
@@ -283,36 +303,51 @@ class DesktopSkills:
                     subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
 
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.TYPE_TEXT,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.TYPE_TEXT,
                     output_message=f"Typed '{text}'",
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.TYPE_TEXT,
+                step_id=1,
+                success=False,
+                action_type=ActionType.TYPE_TEXT,
                 output_message=f"Failed to type text: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
 
     @staticmethod
     def type_in_app(text: str, app_name: Optional[str] = None, press_enter: bool = True) -> ExecutionResult:
-        """Focuses target application and enters text. In browsers, focuses address bar first."""
+        """Focuses target application and enters text. In browsers, focuses address/search bar first."""
         if app_name:
             DesktopSkills.focus_app(app_name)
             time.sleep(0.3)
+            # If target is a browser (Chrome, Safari), focus the address/search bar first
             if any(b in app_name.lower() for b in ["chrome", "safari", "browser"]):
                 DesktopSkills.press_hotkey(["command", "l"])
                 time.sleep(0.15)
-                return DesktopSkills.type_text(text, press_enter=True)
+                # Determine if the text is a search term vs a URL
+                # Search terms: no dots, no protocol prefix, contains spaces or is a plain word
+                is_search_term = (
+                    "." not in text
+                    and not text.lower().startswith("http://")
+                    and not text.lower().startswith("https://")
+                )
+                if is_search_term:
+                    # Type search term directly into the address bar and press Enter (triggers search)
+                    return DesktopSkills.type_text(text, press_enter=True)
+                else:
+                    # It looks like a URL, type it and press Enter to navigate
+                    return DesktopSkills.type_text(text, press_enter=True)
         return DesktopSkills.type_text(text, press_enter=press_enter)
-
-    # =========================================================================
-    # BROWSER NAVIGATION
-    # =========================================================================
 
     @staticmethod
     def _ensure_browser_running() -> str:
-        """Ensures at least one browser is running."""
+        """Ensures at least one browser is running. Returns the browser name that is running."""
         if sys.platform != "darwin":
             return "default"
         try:
@@ -321,19 +356,26 @@ class DesktopSkills:
                 set isChrome to (name of processes) contains "Google Chrome"
                 set isSafari to (name of processes) contains "Safari"
             end tell
-            if isChrome then return "chrome"
-            else if isSafari then return "safari"
-            else return "none"
+            if isChrome then
+                return "chrome"
+            else if isSafari then
+                return "safari"
+            else
+                return "none"
             end if
             '''
             res = subprocess.run(["osascript", "-e", check_script], capture_output=True, text=True, timeout=5)
             result = res.stdout.strip().lower()
             if result == "none":
+                # Neither browser is running; launch Chrome
+                logger.info("No browser running, launching Google Chrome")
                 subprocess.Popen(["open", "-a", "Google Chrome"])
                 time.sleep(1.0)
                 return "chrome"
             return result
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to check browser status: {e}")
+            # Try launching Chrome as a fallback
             try:
                 subprocess.Popen(["open", "-a", "Google Chrome"])
                 time.sleep(1.0)
@@ -343,9 +385,9 @@ class DesktopSkills:
 
     @staticmethod
     def navigate_active_tab(target_query: str) -> ExecutionResult:
-        """Navigates the CURRENT active browser tab to a URL."""
+        """Navigates the CURRENT active browser tab to a URL or YouTube/Google search without opening new tabs."""
         start_time = time.perf_counter()
-        clean = target_query.strip().rstrip(".?!,'\"")
+        clean = target_query.strip().strip(".?!,'\"")
 
         # Resolve destination URL
         if clean.lower() in ["youtube", "youtube.com", "www.youtube.com"]:
@@ -362,9 +404,10 @@ class DesktopSkills:
 
         try:
             if sys.platform == "darwin":
+                # Ensure at least one browser is running before attempting navigation
                 DesktopSkills._ensure_browser_running()
 
-                nav_script = f'''
+                as_nav = f'''
                 tell application "System Events"
                     set isChrome to (name of processes) contains "Google Chrome"
                     set isSafari to (name of processes) contains "Safari"
@@ -396,33 +439,42 @@ class DesktopSkills:
                     return "ok"
                 end if
                 '''
-                res = subprocess.run(["osascript", "-e", nav_script], capture_output=True, text=True)
+                res = subprocess.run(["osascript", "-e", as_nav], capture_output=True, text=True)
                 if "ok" in res.stdout:
                     return ExecutionResult(
-                        step_id=1, success=True, action_type=ActionType.LAUNCH_APP,
-                        output_message=f"Navigated to {url}",
-                        latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.LAUNCH_APP,
+                        output_message=f"Navigated active tab to {url}",
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
                     )
 
-                # Fallback: Cmd+L then type URL
+                # Fallback: Focus address bar (Cmd+L), type URL, hit Return
                 DesktopSkills.press_hotkey(["command", "l"])
                 time.sleep(0.1)
                 DesktopSkills.type_text(url, press_enter=True)
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.LAUNCH_APP,
-                    output_message=f"Navigated to {url}",
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.LAUNCH_APP,
+                    output_message=f"Navigated active tab to {url}",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.LAUNCH_APP,
-                output_message=f"Navigation failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                step_id=1,
+                success=False,
+                action_type=ActionType.LAUNCH_APP,
+                output_message=f"Failed to navigate tab: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
 
     @staticmethod
     def switch_browser_tab(tab_number: int) -> ExecutionResult:
-        """Switches to a specific browser tab by index."""
+        """Switches to a specific tab index (1st tab, 2nd tab, 3rd tab) in Chrome/Safari."""
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
@@ -453,33 +505,38 @@ class DesktopSkills:
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
                 if "ok" in res.stdout:
                     return ExecutionResult(
-                        step_id=1, success=True, action_type=ActionType.KEY_COMBINATION,
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.KEY_COMBINATION,
                         output_message=f"Switched to tab {tab_number}",
-                        latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
                     )
 
-                # Fallback: Cmd+number
+                # Fallback via hotkey: Cmd + tab_number (Cmd+1, Cmd+2, etc.)
                 if 1 <= tab_number <= 9:
                     DesktopSkills.press_hotkey(["command", str(tab_number)])
                     return ExecutionResult(
-                        step_id=1, success=True, action_type=ActionType.KEY_COMBINATION,
-                        output_message=f"Switched to tab {tab_number}",
-                        latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.KEY_COMBINATION,
+                        output_message=f"Switched to tab {tab_number} via Cmd+{tab_number}",
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
                     )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.KEY_COMBINATION,
-                output_message=f"Tab switch failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                step_id=1,
+                success=False,
+                action_type=ActionType.KEY_COMBINATION,
+                output_message=f"Failed to switch to tab {tab_number}: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # KEYBOARD SHORTCUTS
-    # =========================================================================
 
     @staticmethod
     def press_hotkey(keys: List[str]) -> ExecutionResult:
-        """Dispatches keyboard shortcuts via AppleScript."""
+        """Dispatches keyboard shortcuts (e.g. Cmd+F, Return, Tab, Cmd+V)."""
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
@@ -496,15 +553,26 @@ class DesktopSkills:
 
                 mod_str = f"using {{{', '.join(using_modifiers)}}}" if using_modifiers else ""
 
+                # Target key
                 target_key = keys[-1].lower()
-                key_codes = {
-                    "enter": 36, "return": 36, "space": 49, "tab": 48,
-                    "escape": 53, "down": 125, "up": 126, "left": 123,
-                    "right": 124, "delete": 51, "backspace": 51,
-                }
-
-                if target_key in key_codes:
-                    key_action = f"key code {key_codes[target_key]} {mod_str}"
+                if target_key in ["enter", "return"]:
+                    key_action = f"key code 36 {mod_str}"
+                elif target_key == "space":
+                    key_action = f"key code 49 {mod_str}"
+                elif target_key == "tab":
+                    key_action = f"key code 48 {mod_str}"
+                elif target_key == "escape":
+                    key_action = f"key code 53 {mod_str}"
+                elif target_key == "down":
+                    key_action = f"key code 125 {mod_str}"
+                elif target_key == "up":
+                    key_action = f"key code 126 {mod_str}"
+                elif target_key == "left":
+                    key_action = f"key code 123 {mod_str}"
+                elif target_key == "right":
+                    key_action = f"key code 124 {mod_str}"
+                elif target_key == "delete" or target_key == "backspace":
+                    key_action = f"key code 51 {mod_str}"
                 else:
                     key_action = f'keystroke "{target_key}" {mod_str}'
 
@@ -515,42 +583,44 @@ class DesktopSkills:
                 '''
                 subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.KEY_COMBINATION,
-                    output_message=f"Pressed {'+'.join(keys)}",
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.KEY_COMBINATION,
+                    output_message=f"Pressed hotkey {'+'.join(keys)}",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.KEY_COMBINATION,
+                step_id=1,
+                success=False,
+                action_type=ActionType.KEY_COMBINATION,
                 output_message=f"Hotkey failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # SEMANTIC UI CLICKING
-    # =========================================================================
 
     @staticmethod
     def click_semantic_element(tree: UINode, target_label: str) -> Optional[Tuple[float, float, str]]:
-        """Finds an interactive UI node matching target_label and returns its center."""
+        """Searches the UI tree for an interactive node matching target_label and returns its center coordinates."""
         label_clean = target_label.lower().strip()
         interactive_nodes = tree.flatten_interactive()
 
-        # Exact match
+        # 1. Exact match
         for node in interactive_nodes:
             name = (node.name or "").lower().strip()
             desc = (node.description or "").lower().strip()
             if label_clean == name or label_clean == desc:
                 return (node.bounding_box.center[0], node.bounding_box.center[1], node.id)
 
-        # Substring match
+        # 2. Substring match
         for node in interactive_nodes:
             name = (node.name or "").lower().strip()
             desc = (node.description or "").lower().strip()
             if label_clean in name or label_clean in desc:
                 return (node.bounding_box.center[0], node.bounding_box.center[1], node.id)
 
-        # Fuzzy synonyms
+        # 3. Fuzzy synonyms (e.g. create -> new, blank)
         synonyms = {
             "create": ["new", "blank", "add", "+"],
             "search": ["find", "filter", "query", "magnifyingglass"],
@@ -566,7 +636,7 @@ class DesktopSkills:
 
     @staticmethod
     def physical_click(x: float, y: float) -> ExecutionResult:
-        """Dispatches OS-level mouse click at (x, y)."""
+        """Dispatches an OS-level physical mouse click at (x, y)."""
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
@@ -578,24 +648,26 @@ class DesktopSkills:
                 time.sleep(0.05)
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.CLICK,
-                    output_message=f"Clicked at ({int(x)}, {int(y)})",
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.CLICK,
+                    output_message=f"Clicked at coordinates ({int(x)}, {int(y)})",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.CLICK,
+                step_id=1,
+                success=False,
+                action_type=ActionType.CLICK,
                 output_message=f"Click failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # FILE OPERATIONS
-    # =========================================================================
 
     @staticmethod
     def move_file(source_name: str, target_dir_name: str) -> ExecutionResult:
-        """Finds and moves a file to the target directory."""
+        """Finds a local file and moves it to the target directory hands-free."""
         start_time = time.perf_counter()
         user_home = Path.home()
         common_dirs = {
@@ -609,6 +681,7 @@ class DesktopSkills:
         if not dest_dir.exists():
             dest_dir.mkdir(parents=True, exist_ok=True)
 
+        # Search for source file across home directories
         found_source: Optional[Path] = None
         for search_dir in [user_home / "Downloads", user_home / "Desktop", user_home / "Documents"]:
             try:
@@ -624,75 +697,84 @@ class DesktopSkills:
 
         if not found_source:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.EXECUTE_SHELL,
-                output_message=f"Could not find file matching '{source_name}'",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error="FileNotFound",
+                step_id=1,
+                success=False,
+                action_type=ActionType.EXECUTE_SHELL,
+                output_message=f"Could not locate file matching '{source_name}'",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error="FileNotFound",
             )
 
         try:
             target_path = dest_dir / found_source.name
             shutil.move(str(found_source), str(target_path))
             return ExecutionResult(
-                step_id=1, success=True, action_type=ActionType.EXECUTE_SHELL,
+                step_id=1,
+                success=True,
+                action_type=ActionType.EXECUTE_SHELL,
                 output_message=f"Moved '{found_source.name}' to '{dest_dir.name}'",
-                latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                state_mutated=True,
             )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.EXECUTE_SHELL,
-                output_message=f"Move failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                step_id=1,
+                success=False,
+                action_type=ActionType.EXECUTE_SHELL,
+                output_message=f"Failed to move file: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # SYSTEM CONTROLS
-    # =========================================================================
 
     @staticmethod
     def system_control(action: str) -> ExecutionResult:
-        """Controls system hardware: volume, mute, screenshot."""
+        """Controls system hardware settings: volume, mute, screenshot, display."""
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
                 if action == "volume_up":
-                    subprocess.run(["osascript", "-e", "set volume output volume ((output volume of (get volume settings)) + 12)"], check=True)
-                    msg = "Increased volume."
+                    cmd = "set volume output volume ((output volume of (get volume settings)) + 12)"
+                    subprocess.run(["osascript", "-e", cmd], check=True)
+                    msg = "Increased system volume."
                 elif action == "volume_down":
-                    subprocess.run(["osascript", "-e", "set volume output volume ((output volume of (get volume settings)) - 12)"], check=True)
-                    msg = "Decreased volume."
+                    cmd = "set volume output volume ((output volume of (get volume settings)) - 12)"
+                    subprocess.run(["osascript", "-e", cmd], check=True)
+                    msg = "Decreased system volume."
                 elif action == "mute":
                     subprocess.run(["osascript", "-e", "set volume with output muted"], check=True)
-                    msg = "Muted."
+                    msg = "Muted system audio."
                 elif action == "unmute":
                     subprocess.run(["osascript", "-e", "set volume without output muted"], check=True)
-                    msg = "Unmuted."
+                    msg = "Unmuted system audio."
                 elif action == "screenshot":
                     desktop = Path.home() / "Desktop"
                     out_path = desktop / f"Screenshot_{int(time.time())}.png"
                     subprocess.run(["screencapture", "-x", str(out_path)], check=True)
-                    msg = f"Screenshot saved: {out_path.name}"
+                    msg = f"Saved screenshot to Desktop: {out_path.name}"
                 else:
                     msg = f"System control '{action}' executed."
 
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.EXECUTE_SHELL,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.EXECUTE_SHELL,
                     output_message=msg,
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.EXECUTE_SHELL,
+                step_id=1,
+                success=False,
+                action_type=ActionType.EXECUTE_SHELL,
                 output_message=f"System control failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # SCROLLING
-    # =========================================================================
 
     @staticmethod
     def scroll(direction: str = "down", amount: int = 5) -> ExecutionResult:
-        """Scrolls the active window."""
+        """Scrolls the active window content."""
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
@@ -702,27 +784,31 @@ class DesktopSkills:
                     event = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, delta)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
                 except ImportError:
+                    # Fallback to key code Page Down (121) or Page Up (116)
                     code = 121 if direction == "down" else 116
                     subprocess.run(["osascript", "-e", f'tell application "System Events" to key code {code}'], capture_output=True)
 
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.SCROLL,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.SCROLL,
                     output_message=f"Scrolled {direction}",
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.SCROLL,
+                step_id=1,
+                success=False,
+                action_type=ActionType.SCROLL,
                 output_message=f"Scroll failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # BROWSER & EDIT CONTROLS
-    # =========================================================================
 
     @staticmethod
     def browser_control(action: str) -> ExecutionResult:
+        """Automates browser tabs, reloading, and navigation."""
         key_map = {
             "new_tab": ["command", "t"],
             "close_tab": ["command", "w"],
@@ -730,10 +816,12 @@ class DesktopSkills:
             "prev_tab": ["control", "shift", "tab"],
             "refresh": ["command", "r"],
         }
-        return DesktopSkills.press_hotkey(key_map.get(action, ["command", "r"]))
+        keys = key_map.get(action, ["command", "r"])
+        return DesktopSkills.press_hotkey(keys)
 
     @staticmethod
     def edit_action(action: str) -> ExecutionResult:
+        """Executes clipboard, selection, and document editing shortcuts."""
         key_map = {
             "copy": ["command", "c"],
             "paste": ["command", "v"],
@@ -743,15 +831,12 @@ class DesktopSkills:
             "save": ["command", "s"],
             "select_all": ["command", "a"],
         }
-        return DesktopSkills.press_hotkey(key_map.get(action, ["command", "s"]))
-
-    # =========================================================================
-    # PHOTO INSERTION
-    # =========================================================================
+        keys = key_map.get(action, ["command", "s"])
+        return DesktopSkills.press_hotkey(keys)
 
     @staticmethod
     def insert_photo_into_doc(photo_query: str) -> ExecutionResult:
-        """Finds an image file, copies to clipboard, pastes into active doc."""
+        """Locates an image file on disk, copies it to clipboard, and pastes it into the active doc."""
         start_time = time.perf_counter()
         user_home = Path.home()
         search_dirs = [user_home / "Pictures", user_home / "Downloads", user_home / "Desktop"]
@@ -774,200 +859,226 @@ class DesktopSkills:
 
         if not found_img:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.TYPE_TEXT,
-                output_message=f"No photo found matching '{photo_query}'",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error="PhotoNotFound",
+                step_id=1,
+                success=False,
+                action_type=ActionType.TYPE_TEXT,
+                output_message=f"No photo found matching '{photo_query}' in Pictures/Downloads/Desktop",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error="PhotoNotFound",
             )
 
         try:
             if sys.platform == "darwin":
-                script = f'set the clipboard to (read (POSIX file "{found_img.resolve()}") as JPEG picture)'
-                subprocess.run(["osascript", "-e", script], capture_output=True)
+                # Copy image file to macOS clipboard via AppleScript
+                as_cmd = f'''
+                set the clipboard to (read (POSIX file "{found_img.resolve()}") as JPEG picture)
+                '''
+                subprocess.run(["osascript", "-e", as_cmd], capture_output=True)
                 time.sleep(0.1)
+                # Paste into active document
                 DesktopSkills.press_hotkey(["command", "v"])
                 return ExecutionResult(
-                    step_id=1, success=True, action_type=ActionType.TYPE_TEXT,
-                    output_message=f"Inserted '{found_img.name}' into document.",
-                    latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.TYPE_TEXT,
+                    output_message=f"Copied and inserted '{found_img.name}' into active document.",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
                 )
         except Exception as e:
             return ExecutionResult(
-                step_id=1, success=False, action_type=ActionType.TYPE_TEXT,
-                output_message=f"Photo insert failed: {e}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, error=str(e),
+                step_id=1,
+                success=False,
+                action_type=ActionType.TYPE_TEXT,
+                output_message=f"Failed to insert photo: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
             )
-
-    # =========================================================================
-    # WHATSAPP & MESSAGING FLOW
-    # =========================================================================
 
     @staticmethod
     def send_message_flow(app: str, contact: str, message: str) -> ExecutionResult:
-        """Full messaging flow: activate app → search contact → open chat → type message → send.
-
-        WhatsApp-specific flow uses Cmd+K (native search), then navigates to chat.
-        """
+        """Brings messaging app to front, searches contact, reliably opens chat, and sends the message."""
         start_time = time.perf_counter()
         target_app = "WhatsApp" if app.lower() == "whatsapp" else app.title()
         clean_contact = re.sub(r"\b(contact|person|user)\b", "", contact, flags=re.IGNORECASE).strip()
+
         is_whatsapp = target_app == "WhatsApp"
 
-        if sys.platform != "darwin":
-            return DesktopSkills.type_text(message, press_enter=True)
-
-        # === Step 1: Activate the app ===
-        try:
-            script = f'tell application "{target_app}" to activate'
-            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
-            if res.returncode != 0:
-                subprocess.Popen(["open", "-a", target_app])
-        except Exception:
-            subprocess.Popen(["open", "-a", target_app])
-
-        # Wait for app to come to foreground
-        time.sleep(1.0)
-
-        if is_whatsapp:
-            # === WhatsApp Flow ===
-            # Step 2: Open search with Cmd+K (WhatsApp native search)
+        if sys.platform == "darwin":
+            # --- Step 1: Activate / focus the app ---
             try:
+                activate_script = f'''
+                tell application "{target_app}"
+                    activate
+                end tell
+                '''
+                res = subprocess.run(
+                    ["osascript", "-e", activate_script],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if res.returncode != 0:
+                    # Fallback: try open -a
+                    subprocess.Popen(["open", "-a", target_app])
+            except Exception as e:
+                logger.warning(f"Failed to activate {target_app}: {e}")
+                subprocess.Popen(["open", "-a", target_app])
+
+            # Wait for the app to come to foreground (longer for cold launch)
+            is_fresh = False
+            try:
+                check_running = subprocess.run(
+                    ["osascript", "-e", f'tell application "System Events" to (name of processes) contains "{target_app}"'],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if "false" in check_running.stdout.lower():
+                    is_fresh = True
+            except Exception:
+                pass
+            time.sleep(1.5 if is_fresh else 0.5)
+
+            if is_whatsapp:
+                # --- WhatsApp-specific flow using Cmd+K (native search) ---
+
+                # Step 2: Open search with Cmd+K (WhatsApp for Mac native search shortcut)
                 search_script = '''
                 tell application "System Events"
                     tell process "WhatsApp"
                         set frontmost to true
+                        keystroke "k" using command down
                     end tell
                 end tell
                 '''
-                subprocess.run(["osascript", "-e", search_script], capture_output=True, timeout=3)
+                try:
+                    subprocess.run(["osascript", "-e", search_script], capture_output=True, timeout=3)
+                except Exception as e:
+                    logger.warning(f"WhatsApp Cmd+K failed: {e}")
+                    # Fallback to Cmd+F
+                    DesktopSkills.press_hotkey(["command", "f"])
                 time.sleep(0.3)
-            except Exception:
-                pass
 
-            # Try Cmd+K first, then Cmd+F as fallback
-            DesktopSkills.press_hotkey(["command", "k"])
-            time.sleep(0.4)
+                # Step 3: Type contact name (allow search to populate)
+                DesktopSkills.type_text(clean_contact, press_enter=False)
+                time.sleep(0.8)
 
-            # Step 3: Type contact name
-            DesktopSkills.type_text(clean_contact, press_enter=False, use_clipboard=True)
-            time.sleep(1.0)  # Wait for search results to populate
-
-            # Step 4: Select first search result with Down arrow + Enter
-            select_script = '''
-            tell application "System Events"
-                tell process "WhatsApp"
-                    set frontmost to true
-                    key code 125  -- Down arrow
-                    delay 0.3
-                    key code 36   -- Return (open the chat)
-                end tell
-            end tell
-            '''
-            try:
-                subprocess.run(["osascript", "-e", select_script], capture_output=True, timeout=5)
-            except Exception as e:
-                logger.warning(f"WhatsApp contact selection failed: {e}")
-            time.sleep(0.8)
-
-            # Step 5: Focus message input area
-            # Strategy A: Try clicking the message input box at the bottom of the window
-            try:
-                pos_script = '''
-                tell application "System Events"
-                    tell process "WhatsApp"
-                        set {wx, wy} to position of window 1
-                        set {ww, wh} to size of window 1
-                        return "" & wx & "," & wy & "," & ww & "," & wh
-                    end tell
-                end tell
-                '''
-                pos_res = subprocess.run(["osascript", "-e", pos_script], capture_output=True, text=True, timeout=3)
-                if pos_res.returncode == 0 and "," in pos_res.stdout:
-                    parts = [float(p.strip()) for p in pos_res.stdout.strip().split(",")]
-                    wx, wy, ww, wh = parts[0], parts[1], parts[2], parts[3]
-                    # Click on the message input box (bottom center of chat area, right side)
-                    input_x = wx + (ww * 0.6)
-                    input_y = wy + wh - 50
-                    DesktopSkills.physical_click(input_x, input_y)
-                    time.sleep(0.3)
-            except Exception as e:
-                logger.debug(f"WhatsApp click fallback: {e}")
-
-            # Strategy B: Also try Tab key cycling to message input
-            try:
-                tab_script = '''
+                # Step 4: Select first search result and ensure chat opens
+                select_script = '''
                 tell application "System Events"
                     tell process "WhatsApp"
                         set frontmost to true
-                        key code 48  -- Tab
+                        key code 125  -- Down arrow to highlight first result
                         delay 0.15
-                        key code 48  -- Tab
+                        key code 36   -- Return to open the chat
                     end tell
                 end tell
                 '''
-                subprocess.run(["osascript", "-e", tab_script], capture_output=True, timeout=3)
-            except Exception:
-                pass
-            time.sleep(0.2)
+                try:
+                    subprocess.run(["osascript", "-e", select_script], capture_output=True, timeout=5)
+                except Exception as e:
+                    logger.warning(f"WhatsApp contact selection failed: {e}")
+                time.sleep(0.3)
 
-            # Step 6: Type message and press Enter to send
-            DesktopSkills.type_text(message, press_enter=True, use_clipboard=True)
+                # Step 5: Focus chat & message input via direct coordinate click
+                try:
+                    pos_script = '''
+                    tell application "System Events"
+                        tell process "WhatsApp"
+                            set {wx, wy} to position of window 1
+                            set {ww, wh} to size of window 1
+                            return "" & wx & "," & wy & "," & ww & "," & wh
+                        end tell
+                    end tell
+                    '''
+                    pos_res = subprocess.run(
+                        ["osascript", "-e", pos_script],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if pos_res.returncode == 0 and "," in pos_res.stdout:
+                        parts = [float(p.strip()) for p in pos_res.stdout.strip().split(",")]
+                        wx, wy, ww, wh = parts[0], parts[1], parts[2], parts[3]
+                        # Click first search result in left sidebar to guarantee opening chat
+                        DesktopSkills.physical_click(wx + min(180, ww * 0.18), wy + 160)
+                        time.sleep(0.3)
+                        # Click message input box at bottom center of chat area
+                        DesktopSkills.physical_click(wx + (ww * 0.65), wy + wh - 45)
+                        time.sleep(0.2)
+                except Exception as e:
+                    logger.debug(f"WhatsApp physical click fallback failed: {e}")
 
-            return ExecutionResult(
-                step_id=1, success=True, action_type=ActionType.TYPE_TEXT,
-                output_message=f"Sent '{message}' to '{clean_contact}' on WhatsApp",
-                latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
-            )
+                # Step 6: Type message and send
+                DesktopSkills.type_text(message, press_enter=True, use_clipboard=True)
 
-        else:
-            # === Generic messaging app flow ===
-            DesktopSkills.press_hotkey(["command", "f"])
-            time.sleep(0.25)
-            DesktopSkills.press_hotkey(["command", "a"])
-            time.sleep(0.1)
-            DesktopSkills.type_text(clean_contact, press_enter=False)
-            time.sleep(0.6)
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.TYPE_TEXT,
+                    output_message=f"Sent message to '{clean_contact}' on WhatsApp: \"{message}\"",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
 
-            # Navigate to first result
-            open_script = f'''
-            tell application "System Events"
-                tell process "{target_app}"
-                    set frontmost to true
-                    key code 125 -- Down arrow
-                    delay 0.2
-                    key code 36  -- Return
-                    delay 0.3
-                end tell
-            end tell
-            '''
-            subprocess.run(["osascript", "-e", open_script], capture_output=True)
-            time.sleep(0.4)
+            else:
+                # --- Generic messaging app flow (Messages, Telegram, etc.) ---
+                # Use Cmd+F for search
+                DesktopSkills.press_hotkey(["command", "f"])
+                time.sleep(0.25)
 
-            # Try clicking message input
-            try:
-                pos_script = f'''
+                # Clear any existing search text
+                DesktopSkills.press_hotkey(["command", "a"])
+                time.sleep(0.1)
+
+                # Type contact name
+                DesktopSkills.type_text(clean_contact, press_enter=False)
+                time.sleep(0.6)
+
+                # Navigate to first result and open it
+                open_script = f'''
                 tell application "System Events"
                     tell process "{target_app}"
-                        set {{wx, wy}} to position of window 1
-                        set {{ww, wh}} to size of window 1
-                        return "" & wx & "," & wy & "," & ww & "," & wh
+                        set frontmost to true
+                        key code 125 -- Down arrow
+                        delay 0.2
+                        key code 36  -- Return
+                        delay 0.3
                     end tell
                 end tell
                 '''
-                pos_res = subprocess.run(["osascript", "-e", pos_script], capture_output=True, text=True)
-                if pos_res.returncode == 0 and "," in pos_res.stdout:
-                    parts = [float(p.strip()) for p in pos_res.stdout.strip().split(",")]
-                    wx, wy, ww, wh = parts[0], parts[1], parts[2], parts[3]
-                    DesktopSkills.physical_click(wx + 150, wy + 140)
-                    time.sleep(0.3)
-                    DesktopSkills.physical_click(wx + (ww / 2), wy + wh - 40)
-                    time.sleep(0.2)
-            except Exception:
-                pass
+                subprocess.run(["osascript", "-e", open_script], capture_output=True)
+                time.sleep(0.4)
 
-            DesktopSkills.type_text(message, press_enter=True, use_clipboard=True)
+                # Physical click fallback for contact selection and message input
+                try:
+                    pos_script = f'''
+                    tell application "System Events"
+                        tell process "{target_app}"
+                            set {{wx, wy}} to position of window 1
+                            set {{ww, wh}} to size of window 1
+                            return "" & wx & "," & wy & "," & ww & "," & wh
+                        end tell
+                    end tell
+                    '''
+                    pos_res = subprocess.run(["osascript", "-e", pos_script], capture_output=True, text=True)
+                    if pos_res.returncode == 0 and "," in pos_res.stdout:
+                        parts = [float(p.strip()) for p in pos_res.stdout.strip().split(",")]
+                        wx, wy, ww, wh = parts[0], parts[1], parts[2], parts[3]
+                        # Click first search result
+                        DesktopSkills.physical_click(wx + 150, wy + 140)
+                        time.sleep(0.3)
+                        # Click message input box at bottom
+                        DesktopSkills.physical_click(wx + (ww / 2), wy + wh - 40)
+                        time.sleep(0.2)
+                except Exception:
+                    pass
 
-            return ExecutionResult(
-                step_id=1, success=True, action_type=ActionType.TYPE_TEXT,
-                output_message=f"Sent '{message}' to '{clean_contact}' on {target_app}",
-                latency_ms=(time.perf_counter() - start_time) * 1000, state_mutated=True,
-            )
+                # Type and send message
+                DesktopSkills.type_text(message, press_enter=True, use_clipboard=True)
+
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.TYPE_TEXT,
+                    output_message=f"Sent message to '{clean_contact}' on {target_app}: \"{message}\"",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
+        else:
+            return DesktopSkills.type_text(message, press_enter=True)
