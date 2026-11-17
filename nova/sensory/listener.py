@@ -38,30 +38,77 @@ class VoiceDaemon:
                 self._whisper_model = False
         return self._whisper_model
 
+    def _get_active_input_device(self, sd) -> tuple:
+        """Dynamically detects and selects the active microphone.
+
+        Prioritizes connected earphones/headphones/AirPods over built-in mic,
+        and excludes virtual loopback devices (BlackHole, Teams, Zoom).
+        """
+        try:
+            devices = sd.query_devices()
+            default_in, _ = sd.default.device
+
+            wearable_keywords = [
+                "airpod", "headphone", "headset", "earphone", "buds",
+                "bluetooth", "wireless", "usb", "external"
+            ]
+            virtual_keywords = ["blackhole", "teams", "zoom", "aggregate"]
+
+            # 1. First priority: Check if any earphone / headset / AirPods is connected
+            for idx, dev in enumerate(devices):
+                if dev.get("max_input_channels", 0) > 0:
+                    name = dev.get("name", "").lower()
+                    if any(v in name for v in virtual_keywords):
+                        continue
+                    if any(w in name for w in wearable_keywords):
+                        return idx, dev.get("name", "Connected Earphones")
+
+            # 2. Second priority: macOS system default input device
+            if default_in is not None and 0 <= default_in < len(devices):
+                dev = devices[default_in]
+                name = dev.get("name", "").lower()
+                if dev.get("max_input_channels", 0) > 0 and not any(v in name for v in virtual_keywords):
+                    return default_in, dev.get("name", "System Default")
+
+            # 3. Third priority: Built-in MacBook microphone
+            for idx, dev in enumerate(devices):
+                if dev.get("max_input_channels", 0) > 0:
+                    name = dev.get("name", "").lower()
+                    if not any(v in name for v in virtual_keywords):
+                        return idx, dev.get("name", "Microphone")
+        except Exception:
+            pass
+
+        return None, "System Default Microphone"
+
     def start_listening(self):
         import sounddevice as sd
         from rich.console import Console
         from rich.panel import Panel
 
         console = Console()
+        device_id, device_name = self._get_active_input_device(sd)
+
         console.print(Panel(
-            "[bold cyan]✦ N.O.V.A. Continuous Voice Daemon Active[/bold cyan]\n"
-            "[green]Listening through MacBook Air Microphone...[/green]\n"
-            "[dim]Try speaking: 'Nova, open Safari' or 'Nova, close WhatsApp' or press Ctrl+C to stop.[/dim]",
+            f"[bold cyan]✦ N.O.V.A. Continuous Voice Daemon Active[/bold cyan]\n"
+            f"[green]🎙️  Active Input: [bold white]{device_name}[/bold white][/green]\n"
+            f"[dim]Auto-detects earphones/AirPods & follows system default audio.[/dim]\n"
+            f"[dim]Speak: 'Nova, open Safari' or 'Nova, close WhatsApp' (Ctrl+C to stop).[/dim]",
             border_style="cyan"
         ))
 
         self.running = True
 
-        # Fast keyword recognizer / energy gate
+        # Bind InputStream directly to the detected active audio input device
         with sd.InputStream(
+            device=device_id,
             samplerate=self.sample_rate,
             channels=1,
             dtype="float32",
             callback=audio_callback,
             blocksize=int(self.sample_rate * 0.2),  # 200ms blocks
         ):
-            print("\n🎙️  Ready and listening for voice commands...")
+            print(f"\n🎙️  Ready and listening through '{device_name}'...")
             speech_buffer = []
             is_speaking = False
             silence_chunks = 0
