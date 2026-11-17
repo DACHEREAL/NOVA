@@ -20,6 +20,21 @@ class ResolvedIntent:
 class NaturalLanguageIntentResolver:
     """Robust, flexible NLP parser understanding human speech in any word order."""
 
+    # Comprehensive set of known websites / web services
+    KNOWN_WEBSITES = {
+        "facebook", "fb", "instagram", "insta", "twitter", "x", "reddit",
+        "youtube", "yt", "netflix", "amazon", "github", "chatgpt", "openai",
+        "linkedin", "gmail", "g-mail", "wikipedia", "docs", "google docs",
+        "google word", "drive", "google drive", "whatsapp web",
+        # Newly added
+        "pinterest", "twitch", "tiktok", "snapchat", "threads", "quora",
+        "medium", "stackoverflow", "stack overflow", "notion", "figma",
+        "canva", "zoom", "meet", "google meet", "maps", "google maps",
+    }
+
+    # Messaging apps (discord now included)
+    MESSAGING_APPS = ["whatsapp", "telegram", "messages", "slack", "discord"]
+
     @classmethod
     def resolve(cls, utterance: str, active_app: Optional[str] = None) -> Optional[ResolvedIntent]:
         text = utterance.strip()
@@ -39,12 +54,18 @@ class NaturalLanguageIntentResolver:
 
         # -------------------------------------------------------------
         # 1. DICTIONARY & WORD DEFINITIONS
-        # E.g. "type help in dictionary", "meaning of help", "define help", "search help in dictionary"
+        # E.g. "type help in dictionary", "meaning of help", "define help",
+        #       "search help in dictionary", "just type help in dictionary",
+        #       "search for meaning of help in dictionary", "define love"
         # -------------------------------------------------------------
         if "dictionary" in tokens or any(w in text_clean for w in ["meaning of", "definition of", "define ", "what does", "what is the meaning of"]):
             target_word = text_clean
+            # Strip ALL action verbs, prepositions, articles, filler, and "dictionary" itself
             target_word = re.sub(
-                r"\b(what is the meaning of|what does|meaning of|definition of|define|search for|search|look up|type|just|open|and|in the dictionary|on the dictionary|in dictionary|on dictionary|the dictionary|dictionary|mean|word|the|a|for|of|is|what)\b",
+                r"\b(what is the meaning of|what does|meaning of|definition of|define|search for|search|look up|look|type|write|enter|just|open|and|"
+                r"in the dictionary|on the dictionary|in dictionary|on dictionary|the dictionary|dictionary|"
+                r"mean|word|the|a|for|of|is|what|it|me|tell|give|show|find|up|help me|"
+                r"can you|could you|please|would you|i want|go ahead|i need you to)\b",
                 " ",
                 target_word,
                 flags=re.IGNORECASE,
@@ -60,16 +81,12 @@ class NaturalLanguageIntentResolver:
 
         # -------------------------------------------------------------
         # 2. OPEN WEBSITE / WEB APP ON CHROME / BROWSER
-        # E.g. "open facebook on chrome", "open fb on chrome", "open facebook chrome", "open fb chrome", "open facebook"
+        # E.g. "open facebook on chrome", "open fb on chrome",
+        #       "open facebook chrome", "open fb chrome", "open facebook"
         # -------------------------------------------------------------
-        known_websites = {
-            "facebook", "fb", "instagram", "insta", "twitter", "x", "reddit",
-            "youtube", "yt", "netflix", "amazon", "github", "chatgpt", "openai",
-            "linkedin", "gmail", "g-mail", "wikipedia", "docs", "google docs",
-            "google word", "drive", "google drive", "whatsapp web"
-        }
-
-        # Explicit website invocation: e.g. "open facebook on chrome", "open fb chrome"
+        # Explicit website invocation with browser:
+        #   "open facebook on chrome", "open facebook in chrome",
+        #   "open facebook chrome" (no preposition)
         open_web_match = re.search(
             r"^(open|go to|launch)\s+(?P<site>[a-zA-Z0-9_\-\. ]+?)\s+((on|in)\s+)?(chrome|safari|browser|google)(\s+tab)?$",
             text_clean,
@@ -89,11 +106,12 @@ class NaturalLanguageIntentResolver:
                     f"Opening website '{site}' in Chrome."
                 )
 
-        # Direct open web service: e.g. "open facebook", "open fb", "open reddit", "open google word"
+        # Direct open web service: "open facebook", "open fb", "open reddit", "open google word"
+        # Checks known_websites BEFORE launch_app fallback so "open facebook" → open_website
         open_direct = re.search(r"^(open|go to|launch)\s+(?P<target>[a-zA-Z0-9_\-\. ]+)$", text_clean, flags=re.IGNORECASE)
         if open_direct:
             target = open_direct.group("target").strip().lower()
-            if target in known_websites or target.endswith((".com", ".org", ".net", ".io", ".co")):
+            if target in cls.KNOWN_WEBSITES or target.endswith((".com", ".org", ".net", ".io", ".co")):
                 return ResolvedIntent(
                     "open_website",
                     0.95,
@@ -106,9 +124,11 @@ class NaturalLanguageIntentResolver:
         # E.g. "search frosty in whatsapp and type hi", "open whatsapp and send hi to frosty",
         # "open whatsapp and send frosty hi", "search for frosty contact and type hi", "send hi to frosty"
         # -------------------------------------------------------------
+        _msg_app_pat = "|".join(cls.MESSAGING_APPS)
+
         # 3A: "open <app> and send <msg> to <contact>"
         m_open_send_to = re.search(
-            r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:send|text|message|type)\s+(?P<msg>.+?)\s+to\s+(?P<contact>[a-zA-Z0-9 ]+)",
+            rf"(?:open|launch)\s+(?P<app>{_msg_app_pat})\s+(?:and|then)?\s*(?:send|text|message|type)\s+(?P<msg>.+?)\s+to\s+(?P<contact>[a-zA-Z0-9 ]+)",
             text_clean, flags=re.IGNORECASE
         )
         if m_open_send_to:
@@ -124,7 +144,7 @@ class NaturalLanguageIntentResolver:
 
         # 3B: "open <app> and send <contact> <msg>"
         m_open_send = re.search(
-            r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:send|text|message|type)\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+(?P<msg>.+)",
+            rf"(?:open|launch)\s+(?P<app>{_msg_app_pat})\s+(?:and|then)?\s*(?:send|text|message|type)\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+(?P<msg>.+)",
             text_clean, flags=re.IGNORECASE
         )
         if m_open_send and not m_open_send.group("contact").lower().startswith("to "):
@@ -140,7 +160,7 @@ class NaturalLanguageIntentResolver:
 
         # 3C: "open <app> and search [for] <contact> and (type|send) <msg>"
         m_open_search = re.search(
-            r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message)\s+(?P<msg>.+)",
+            rf"(?:open|launch)\s+(?P<app>{_msg_app_pat})\s+(?:and|then)?\s*(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message)\s+(?P<msg>.+)",
             text_clean, flags=re.IGNORECASE
         )
         if m_open_search:
@@ -157,11 +177,11 @@ class NaturalLanguageIntentResolver:
         # 3D: "search [for] <contact> in/on <app> and (type|send) <msg>"
         m_search_in = (
             re.search(
-                r"(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+                rf"(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+(?:in|on)\s+(?P<app>{_msg_app_pat})\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
                 text_clean, flags=re.IGNORECASE
             )
             or re.search(
-                r"(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+                rf"(?:in|on)\s+(?P<app>{_msg_app_pat})\s+(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)(?:\s+contact)?\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
                 text_clean, flags=re.IGNORECASE
             )
         )
@@ -216,13 +236,22 @@ class NaturalLanguageIntentResolver:
         if m_send_contact and not any(w in tokens for w in ["search", "find", "google", "to"]):
             contact = re.sub(r"\b(contact|person|user)\b", "", m_send_contact.group("contact"), flags=re.IGNORECASE).strip()
             msg = m_send_contact.group("msg").strip()
+            # Detect and extract messaging app name from message if present
             target_app = active_app or "WhatsApp"
-            return ResolvedIntent(
-                "send_message",
-                0.95,
-                {"app": target_app, "contact": contact, "message": msg},
-                f"Sending '{msg}' to '{contact}' in {target_app}."
-            )
+            for _ma in cls.MESSAGING_APPS:
+                if _ma in tokens:
+                    target_app = _ma.title() if _ma != "whatsapp" else "WhatsApp"
+                    # Strip "on/in <app>" and leading "that/saying" from message
+                    msg = re.sub(rf"\b(on|in)\s+{_ma}\b", "", msg, flags=re.IGNORECASE).strip()
+                    break
+            msg = re.sub(r"^(that\s+|saying\s+)", "", msg, flags=re.IGNORECASE).strip()
+            if contact and msg:
+                return ResolvedIntent(
+                    "send_message",
+                    0.95,
+                    {"app": target_app, "contact": contact, "message": msg},
+                    f"Sending '{msg}' to '{contact}' in {target_app}."
+                )
 
         # -------------------------------------------------------------
         # 4. SYSTEM AUDIO & HARDWARE CONTROLS
@@ -241,7 +270,7 @@ class NaturalLanguageIntentResolver:
             return ResolvedIntent("system_control", 0.95, {"action": "screenshot"}, "Capturing screenshot to Desktop.")
 
         # -------------------------------------------------------------
-        # 2. SCROLLING & NAVIGATION
+        # 5. SCROLLING & NAVIGATION
         # -------------------------------------------------------------
         if "scroll" in tokens or "page" in tokens:
             if any(w in tokens for w in ["down", "bottom", "lower"]):
@@ -250,7 +279,7 @@ class NaturalLanguageIntentResolver:
                 return ResolvedIntent("scroll", 0.90, {"direction": "up", "amount": 5}, "Scrolling up the active page.")
 
         # -------------------------------------------------------------
-        # 3. BROWSER CONTROLS (TABS, NAVIGATION, ACTIVE TAB SEARCH)
+        # 6. BROWSER CONTROLS (TABS, NAVIGATION, ACTIVE TAB SEARCH)
         # -------------------------------------------------------------
         # Active tab navigation: "open youtube on the tab", "search mrbeast on this tab", "go to youtube on this tab"
         if any(phrase in text_lower for phrase in ["on the tab", "on this tab", "in this tab", "in the tab", "current tab", "this tab"]):
@@ -264,9 +293,33 @@ class NaturalLanguageIntentResolver:
                     f"Navigating active browser tab to '{nav_query}'."
                 )
 
-        # Tab index switching: "go to 1st tab", "go to 2nd tab", "switch to 3rd tab", "first tab", "tab 1"
-        tab_num_match = re.search(r"\b(go to|switch to|open)?\s*(?P<num>1st|2nd|3rd|4th|5th|6th|7th|8th|9th|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|last|[1-9])\s*(tab)?\b", text_lower)
-        if tab_num_match and ("tab" in tokens or "switch" in tokens or "go" in tokens):
+        # Tab index switching: "go to 1st tab", "go to 2nd tab", "switch to 3rd tab",
+        #   "first tab", "tab 1", "go to 1st tab from 3rd"
+        # First, strip trailing "from Xth" / "from X" noise before matching
+        tab_text = re.sub(r"\s+from\s+(\d+(?:st|nd|rd|th)|first|second|third|fourth|fifth|last|\d+)\s*$", "", text_lower)
+        tab_text = re.sub(r"\s+from\s+(\d+(?:st|nd|rd|th)|first|second|third|fourth|fifth|last|\d+)\b", "", tab_text)
+
+        # Multiple patterns for maximum flexibility
+        tab_num_match = (
+            re.search(
+                r"(?:go\s+to|switch\s+to|open)\s+(?:the\s+)?(?P<num>\d+(?:st|nd|rd|th)|first|second|third|fourth|fifth|last)\s+tab",
+                tab_text, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"tab\s+(?P<num>[1-9])",
+                tab_text, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"\b(?P<num>1st|2nd|3rd|4th|5th|6th|7th|8th|9th|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|last)\s+tab\b",
+                tab_text, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"\b(go to|switch to|open)?\s*(?P<num>1st|2nd|3rd|4th|5th|6th|7th|8th|9th|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|last|[1-9])\s*(tab)?\b",
+                tab_text
+            )
+        )
+        # Only fire if we have an actual tab context (tab word, or go/switch verb)
+        if tab_num_match and ("tab" in tab_text.split() or "switch" in tab_text.split() or "go" in tab_text.split()):
             num_str = tab_num_match.group("num").lower()
             num_map = {
                 "1st": 1, "first": 1, "1": 1,
@@ -302,7 +355,7 @@ class NaturalLanguageIntentResolver:
                 return ResolvedIntent("browser_control", 0.90, {"action": "refresh"}, "Reloading page.")
 
         # -------------------------------------------------------------
-        # 4. EDITING SHORTCUTS (SELECT ALL, COPY, PASTE, UNDO, SAVE)
+        # 7. EDITING SHORTCUTS (SELECT ALL, COPY, PASTE, UNDO, SAVE)
         # -------------------------------------------------------------
         if any(w in tokens for w in ["copy", "paste", "cut", "undo", "redo", "save"]):
             if "copy" in tokens:
@@ -319,7 +372,7 @@ class NaturalLanguageIntentResolver:
                 return ResolvedIntent("edit_action", 0.90, {"action": "select_all"}, "Selecting all text/items.")
 
         # -------------------------------------------------------------
-        # 5. PHOTO INSERTION INTO DOCS / NOTES
+        # 8. PHOTO INSERTION INTO DOCS / NOTES
         # -------------------------------------------------------------
         if any(w in tokens for w in ["insert", "place", "add", "paste"]) and any(w in tokens for w in ["photo", "image", "picture", "screenshot", "pic"]):
             photo_match = re.search(r"(photo|image|picture|pic)\s+(of\s+)?(?P<name>[a-zA-Z0-9_\- ]+)", text_lower)
@@ -332,7 +385,7 @@ class NaturalLanguageIntentResolver:
             )
 
         # -------------------------------------------------------------
-        # 6. WEB SEARCH IN ANY WORD ORDER
+        # 9. WEB SEARCH IN ANY WORD ORDER
         # E.g. "search for mr beast on youtube", "on youtube search mr beast",
         # "find mr beast on youtube", "pull up mr beast on youtube", "look up mr beast on youtube"
         # -------------------------------------------------------------
@@ -371,13 +424,24 @@ class NaturalLanguageIntentResolver:
                     f"Searching Google for '{query}'"
                 )
 
+        # Bare "search <query>" without platform → default to Google search
+        bare_search = re.search(r"^search\s+(?P<query>.+)$", text_clean, flags=re.IGNORECASE)
+        if bare_search:
+            query = bare_search.group("query").strip()
+            if query:
+                return ResolvedIntent(
+                    "web_search",
+                    0.80,
+                    {"platform": "google", "query": query},
+                    f"Searching Google for '{query}'"
+                )
+
         # -------------------------------------------------------------
-        # 7. IN-APP MESSAGING & COMMUNICATION IN ANY WORD ORDER
+        # 10. IN-APP MESSAGING & COMMUNICATION IN ANY WORD ORDER
         # E.g. "in whatsapp search for mom", "send message to mom on whatsapp saying hello",
         # "text mom hello on whatsapp", "tell mom i am on my way on whatsapp"
         # -------------------------------------------------------------
-        messaging_apps = ["whatsapp", "telegram", "messages", "slack", "discord"]
-        for m_app in messaging_apps:
+        for m_app in cls.MESSAGING_APPS:
             if m_app in tokens:
                 # Pattern A: "send [msg] to [contact]" or "text [contact] [msg]"
                 send_match = re.search(
@@ -385,8 +449,10 @@ class NaturalLanguageIntentResolver:
                     text_lower
                 )
                 if send_match and not any(w in tokens for w in ["search", "find"]):
-                    contact = send_match.group("contact").replace(m_app, "").replace("on", "").strip()
-                    msg = send_match.group("msg").replace(m_app, "").replace("on", "").strip()
+                    contact = send_match.group("contact").strip()
+                    contact = re.sub(rf"\b(on|in|{m_app})\b", "", contact, flags=re.IGNORECASE).strip()
+                    msg = send_match.group("msg").strip()
+                    msg = re.sub(rf"\b(on|in)\s+{m_app}\b", "", msg, flags=re.IGNORECASE).strip()
                     msg = re.sub(r"^(a\s+message\s+(saying|that|with)\s+|saying\s+|that\s+)", "", msg, flags=re.IGNORECASE).strip()
                     if contact and msg:
                         return ResolvedIntent(
@@ -409,7 +475,7 @@ class NaturalLanguageIntentResolver:
                         )
 
         # -------------------------------------------------------------
-        # 8. SEMANTIC UI ELEMENT CLICKING / TAPPING
+        # 11. SEMANTIC UI ELEMENT CLICKING / TAPPING
         # E.g. "tap on create on microsoft word", "in word click new",
         # "click create in word", "press the blank button on word"
         # -------------------------------------------------------------
@@ -448,7 +514,7 @@ class NaturalLanguageIntentResolver:
                 )
 
         # -------------------------------------------------------------
-        # 9. DIRECT TYPING / DICTATION / SEARCH BAR TYPING
+        # 12. DIRECT TYPING / DICTATION / SEARCH BAR TYPING
         # E.g. "type mrbeast on chrome", "type hello world", "dictate: this is a test"
         # -------------------------------------------------------------
         # Check typing into specific app / search: "type mrbeast on chrome", "search mrbeast in chrome"
@@ -489,7 +555,7 @@ class NaturalLanguageIntentResolver:
                 )
 
         # -------------------------------------------------------------
-        # 10. LOCAL FILE OPERATIONS
+        # 13. LOCAL FILE OPERATIONS
         # E.g. "move invoice from downloads to documents", "move photo to desktop"
         # -------------------------------------------------------------
         if "move" in tokens or "transfer" in tokens or "relocate" in tokens:
@@ -509,7 +575,7 @@ class NaturalLanguageIntentResolver:
                 )
 
         # -------------------------------------------------------------
-        # 11. WINDOW MANAGEMENT & SNAPPING
+        # 14. WINDOW MANAGEMENT & SNAPPING
         # E.g. "arrange windows side by side", "split screen", "snap windows"
         # -------------------------------------------------------------
         if any(w in text_lower for w in ["side by side", "arrange windows", "split screen", "snap left", "tile windows"]):
@@ -521,13 +587,24 @@ class NaturalLanguageIntentResolver:
             )
 
         # -------------------------------------------------------------
-        # 12. APP LIFECYCLE (OPEN / CLOSE / QUIT) IN ANY ORDER
+        # 15. APP LIFECYCLE (OPEN / CLOSE / QUIT) IN ANY ORDER
         # E.g. "open WhatsApp", "close Safari", "launch Notes", "quit Word"
+        # "open facebook" → open_website (handled above), "open notes" → launch_app
         # -------------------------------------------------------------
         if any(w in tokens for w in ["open", "launch", "start"]):
             app = text_lower
             app = re.sub(r"\b(open|launch|start|up|app|application|the)\b", "", app).strip()
             if app:
+                # Final check: if the extracted app name matches a known website,
+                # route to open_website (belt-and-suspenders; section 2 should catch it,
+                # but handles multi-word site names that section 2 missed)
+                if app in cls.KNOWN_WEBSITES:
+                    return ResolvedIntent(
+                        "open_website",
+                        0.90,
+                        {"site": app},
+                        f"Opening website '{app}' in Chrome."
+                    )
                 return ResolvedIntent(
                     "launch_app",
                     0.90,

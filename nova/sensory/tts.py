@@ -1,4 +1,4 @@
-"""Low-latency streaming Text-to-Speech (TTS) using Kokoro-82M / Piper."""
+"""Low-latency streaming Text-to-Speech (TTS) using macOS say command."""
 
 import logging
 from typing import AsyncGenerator
@@ -22,4 +22,12 @@ class StreamingTTS:
 
     def speak_sync(self, text: str) -> None:
         """Plays audio confirmation directly to the system default audio output."""
-        logger.info(f"N.O.V.A. Spoken Response: {text}")
+        import subprocess
+        try:
+            subprocess.Popen(
+                ["say", "-r", "200", text],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass

@@ -19,6 +19,16 @@ def audio_callback(indata, frames, time_info, status):
     AUDIO_QUEUE.put(indata.copy())
 
 
+# Wake-word regex: accepts "Nova", "Hey Nova", "No va", "Noava", "No a", "Noa" and fuzzy variants
+WAKE_WORD_RE = re.compile(
+    r"^(hey\s+)?(nova|no\s*v\s*a|no\s*a|noa|no va)[,;\s:!.]+",
+    re.IGNORECASE,
+)
+
+# Number of silence chunks before we consider speech finished (1.4s at 200ms blocks)
+SILENCE_CHUNKS_THRESHOLD = 7
+
+
 class VoiceDaemon:
     """Continuous listening background daemon for N.O.V.A."""
 
@@ -38,8 +48,8 @@ class VoiceDaemon:
                 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
                 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
                 from faster_whisper import WhisperModel
-                # Runs locally on Apple Silicon CPU / Metal in int8 quantization (<150MB)
-                self._whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
+                # small.en with VAD filter + word timestamps for dramatically better accuracy
+                self._whisper_model = WhisperModel("small.en", device="cpu", compute_type="int8")
             except Exception:
                 self._whisper_model = False
         return self._whisper_model
@@ -87,12 +97,43 @@ class VoiceDaemon:
 
         return None, "System Default Microphone"
 
-    def start_listening(self):
-        import sounddevice as sd
-        from rich.console import Console
-        from rich.panel import Panel
+    def _reinitialize_audio(self, sd):
+        """Drain the audio queue and reset the PortAudio/CoreAudio backend."""
+        # Drain stale audio buffers
+        while not AUDIO_QUEUE.empty():
+            try:
+                AUDIO_QUEUE.get_nowait()
+            except Exception:
+                break
+        # Reset the audio subsystem to pick up device changes
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception:
+            pass
 
-        console = Console()
+    def start_listening(self):
+        try:
+            import sounddevice as sd
+        except Exception as e:
+            print(f"[NOVA] Cannot import sounddevice: {e}")
+            return
+
+        try:
+            from rich.console import Console
+            from rich.panel import Panel
+        except Exception:
+            # Minimal fallback if rich is unavailable
+            class Console:
+                def print(self, *a, **kw):
+                    print(*a)
+            class Panel:
+                def __init__(self, *a, **kw):
+                    pass
+            console = Console()
+        else:
+            console = Console()
+
         self.running = True
 
         ai_status = (
@@ -111,83 +152,105 @@ class VoiceDaemon:
             border_style="cyan"
         ))
 
-        # Resilient hardware auto-reconnect loop
+        # Resilient hardware auto-reconnect loop — NEVER lets an exception propagate
         while self.running:
             try:
                 device_id, device_name = self._get_active_input_device(sd)
                 console.print(f"\n[green]🎙️  Active Input: [bold white]{device_name}[/bold white][/green]")
                 print(f"🎙️  Ready and listening through '{device_name}'...")
 
-                with sd.InputStream(
-                    device=device_id,
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    callback=audio_callback,
-                    blocksize=int(self.sample_rate * 0.2),  # 200ms blocks
-                ) as stream:
-                    speech_buffer = []
-                    is_speaking = False
-                    silence_chunks = 0
-                    device_check_tick = 0
+                try:
+                    stream_ctx = sd.InputStream(
+                        device=device_id,
+                        samplerate=self.sample_rate,
+                        channels=1,
+                        dtype="float32",
+                        callback=audio_callback,
+                        blocksize=int(self.sample_rate * 0.2),  # 200ms blocks
+                    )
+                except Exception as open_err:
+                    logger.warning(f"Cannot open audio stream: {open_err}")
+                    print(f"Audio device changed. Switching to next available device...")
+                    self._reinitialize_audio(sd)
+                    time.sleep(1.5)
+                    continue
 
-                    while self.running:
-                        # Detect hardware teardown or stream stoppage (e.g. closing earbuds)
-                        if not stream.active or stream.stopped:
-                            raise RuntimeError(f"Audio stream on '{device_name}' became inactive")
+                try:
+                    with stream_ctx as stream:
+                        speech_buffer = []
+                        is_speaking = False
+                        silence_chunks = 0
+                        device_check_tick = 0
 
-                        try:
-                            chunk = AUDIO_QUEUE.get(timeout=0.25)
-                        except queue.Empty:
-                            if not stream.active or stream.stopped:
-                                raise RuntimeError(f"Audio stream on '{device_name}' stopped")
-                            device_check_tick += 1
-                            # Periodically check if new audio device (e.g. earbuds plugged in) appeared
-                            if device_check_tick % 12 == 0:
-                                new_id, new_name = self._get_active_input_device(sd)
-                                if new_id != device_id:
-                                    console.print(f"\n[cyan]🎧 Audio device change detected: {new_name}. Switching...[/cyan]")
-                                    break
-                            continue
+                        while self.running:
+                            # Detect hardware teardown or stream stoppage (e.g. closing earbuds)
+                            try:
+                                if not stream.active or stream.stopped:
+                                    raise RuntimeError(f"Audio stream on '{device_name}' became inactive")
+                            except Exception:
+                                raise RuntimeError(f"Audio stream on '{device_name}' became inactive")
 
-                        # Compute RMS audio volume
-                        rms = np.sqrt(np.mean(np.square(chunk)))
+                            try:
+                                chunk = AUDIO_QUEUE.get(timeout=0.25)
+                            except queue.Empty:
+                                try:
+                                    if not stream.active or stream.stopped:
+                                        raise RuntimeError(f"Audio stream on '{device_name}' stopped")
+                                except Exception:
+                                    raise RuntimeError(f"Audio stream on '{device_name}' stopped")
+                                device_check_tick += 1
+                                # Periodically check if new audio device (e.g. earbuds plugged in) appeared
+                                if device_check_tick % 12 == 0:
+                                    try:
+                                        new_id, new_name = self._get_active_input_device(sd)
+                                    except Exception:
+                                        continue
+                                    if new_id != device_id:
+                                        console.print(f"\n[cyan]🎧 Audio device change detected: {new_name}. Switching...[/cyan]")
+                                        break
+                                continue
 
-                        # Voice activity threshold (~0.025 for normal voice near laptop)
-                        if rms > 0.025:
-                            if not is_speaking:
-                                is_speaking = True
-                                console.print("  [bold green]● Speech detected...[/bold green]", end="\r")
-                            speech_buffer.append(chunk)
-                            silence_chunks = 0
-                        else:
-                            if is_speaking:
-                                silence_chunks += 1
-                                # If silence persists for ~1 second after speaking, process the utterance
-                                if silence_chunks > 5:
-                                    is_speaking = False
-                                    console.print("\n  [bold cyan]⚡ Processing speech segment...[/bold cyan]")
-                                    self._process_utterance(speech_buffer, console)
-                                    speech_buffer.clear()
-                                    silence_chunks = 0
-            except Exception as stream_err:
+                            # Compute RMS audio volume
+                            rms = np.sqrt(np.mean(np.square(chunk)))
+
+                            # Voice activity threshold (~0.025 for normal voice near laptop)
+                            if rms > 0.025:
+                                if not is_speaking:
+                                    is_speaking = True
+                                    console.print("  [bold green]● Speech detected...[/bold green]", end="\r")
+                                speech_buffer.append(chunk)
+                                silence_chunks = 0
+                            else:
+                                if is_speaking:
+                                    silence_chunks += 1
+                                    # Wait for 7 silence chunks (1.4s) to avoid cutting off mid-sentence
+                                    if silence_chunks > SILENCE_CHUNKS_THRESHOLD:
+                                        is_speaking = False
+                                        console.print("\n  [bold cyan]⚡ Processing speech segment...[/bold cyan]")
+                                        self._process_utterance(speech_buffer, console)
+                                        speech_buffer.clear()
+                                        silence_chunks = 0
+                except Exception as stream_err:
+                    if not self.running:
+                        break
+                    console.print(f"\n[bold yellow]⚠️  Audio hardware changed or disconnected: {stream_err}[/bold yellow]")
+
+            except Exception as outer_err:
                 if not self.running:
                     break
-                console.print(f"\n[bold yellow]⚠️  Audio hardware changed or disconnected: {stream_err}[/bold yellow]")
-                console.print("[cyan]🔄 Seamlessly switching to system microphone in 1s...[/cyan]")
-                # Drain audio queue to prevent stale buffer playback
-                while not AUDIO_QUEUE.empty():
-                    try:
-                        AUDIO_QUEUE.get_nowait()
-                    except Exception:
-                        break
-                # Invalidate CoreAudio / PortAudio device cache
-                try:
-                    sd._terminate()
-                    sd._initialize()
-                except Exception:
-                    pass
-                time.sleep(1.0)
+                console.print(f"\n[bold yellow]⚠️  Audio error: {outer_err}[/bold yellow]")
+
+            # Regardless of which exception path brought us here, recover gracefully
+            if not self.running:
+                break
+            self._reinitialize_audio(sd)
+            time.sleep(1.5)
+            # Re-detect and announce which device we're switching to
+            try:
+                _, new_device_name = self._get_active_input_device(sd)
+                print(f"Audio device changed. Switching to {new_device_name}...")
+            except Exception:
+                print("Audio device changed. Switching to default microphone...")
 
     def _process_utterance(self, speech_chunks, console):
         if not speech_chunks:
@@ -201,8 +264,8 @@ class VoiceDaemon:
 
         console.print(f"  [yellow]Heard:[/yellow] [italic]\"{transcript}\"[/italic]")
 
-        # Strip wake-word variations (Nova, No a, No, Hey Nova)
-        clean_intent = re.sub(r"^(hey\s+)?(nova|no\s*a|no\s*v|no)[,;\s]+", "", transcript, flags=re.IGNORECASE).strip()
+        # Strip wake-word variations using the comprehensive fuzzy regex
+        clean_intent = WAKE_WORD_RE.sub("", transcript).strip()
         if not clean_intent:
             clean_intent = transcript.strip()
 
@@ -227,10 +290,20 @@ class VoiceDaemon:
 
         console.print(f"  [bold cyan]Executing:[/bold cyan] {clean_intent}")
 
+        # Determine which path will be used BEFORE execution
+        uses_ai_brain = self.orchestrator.ai_engine.is_available
+
         def on_step(plan, result):
             console.print(f"  → [dim]{plan.thought}:[/dim] [green]{result.output_message}[/green]")
 
         results = self.orchestrator.execute_user_intent(clean_intent, on_step_update=on_step)
+
+        # Print which processing engine handled the command
+        if uses_ai_brain:
+            print("🧠 AI Brain")
+        else:
+            print("⚡ Reflex Router")
+
         console.print("  [bold green]✓ Done. Listening for next command...[/bold green]\n")
 
     def _transcribe(self, speech_chunks, console) -> str:
@@ -241,11 +314,13 @@ class VoiceDaemon:
         whisper = self._get_whisper()
         if whisper:
             try:
-                # Provide initial_prompt to bias Whisper towards assistant vocabulary
+                # small.en with VAD filter and word timestamps for best accuracy
                 segments, info = whisper.transcribe(
                     audio_data,
                     beam_size=1,
                     language="en",
+                    vad_filter=True,
+                    word_timestamps=True,
                     initial_prompt="Nova, open Safari, close WhatsApp, Notes, Finder, arrange windows.",
                 )
                 text = " ".join([seg.text for seg in segments]).strip()

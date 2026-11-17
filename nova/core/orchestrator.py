@@ -24,6 +24,21 @@ from nova.memory.habit_learner import HabitMemoryEngine
 
 logger = logging.getLogger("nova.core.orchestrator")
 
+# App name alias map — mirrors the one in DesktopSkills.focus_app so that
+# _launch_app_native resolves colloquial names the same way.
+APP_NAME_ALIASES = {
+    "word": "Microsoft Word",
+    "google word": "Microsoft Word",
+    "docs": "Google Chrome",
+    "whatsapp": "WhatsApp",
+    "notes": "Notes",
+    "finder": "Finder",
+    "safari": "Safari",
+    "chrome": "Google Chrome",
+    "code": "Visual Studio Code",
+    "vs code": "Visual Studio Code",
+}
+
 
 class AgentOrchestrator:
     """The central nervous system of N.O.V.A., managing the perception-reasoning-action loop."""
@@ -79,7 +94,7 @@ class AgentOrchestrator:
                 if ai_result:
                     thought, planned_actions = ai_result
                     if planned_actions:
-                        logger.info(f"AI Brain ({self.ai_engine.active_model}) generated plan with {len(planned_actions)} step(s)")
+                        logger.info(f"🧠 AI Brain ({self.ai_engine.active_model}) generated plan with {len(planned_actions)} step(s)")
                         for plan in planned_actions:
                             res = self._dispatch_action(plan)
                             history.append(res)
@@ -94,28 +109,55 @@ class AgentOrchestrator:
                             )
                         self.tts.speak_sync("Done.")
                         return history
+                else:
+                    logger.info(f"🧠 AI Brain ({self.ai_engine.active_model}) returned no plan — falling through to reflex")
             except Exception as e:
-                logger.warning(f"AI Brain execution error, falling back to reflex triage: {e}")
+                logger.warning(f"🧠 AI Brain error ({type(e).__name__}): {e} — falling through to reflex silently")
 
         # 2. Fast Triage / Direct Action Router (<10ms Reflex Fallback)
         direct_action = self._triage_fast_intent(intent, active_app=active_app)
         if direct_action:
-            logger.info("Executing via Fast Triage Path (<30ms)")
-            result = self._dispatch_action(direct_action)
-            history.append(result)
-            if on_step_update:
-                on_step_update(direct_action, result)
-            self.habits.record_interaction(
-                raw_utterance=intent,
-                action_type=direct_action.parameters.get("skill", direct_action.action_type.value),
-                parameters=direct_action.parameters,
-                thought=direct_action.thought,
-                success=result.success,
-            )
-            self.tts.speak_sync("Done.")
-            return history
+            # If the resolver returned open_ended_task, it means no concrete skill
+            # matched.  Skip reflex dispatch and try the AI brain one more time with
+            # a simplified prompt, then fall through to the ReAct loop.
+            if direct_action.parameters.get("skill") == "open_ended_task":
+                logger.info("⚡ Reflex Router returned open_ended_task — attempting AI Brain with simplified prompt")
+                if self.ai_engine.is_available:
+                    try:
+                        simplified = f"The user said: \"{intent}\". Figure out the best action."
+                        ai_retry = self.ai_engine.reason_and_plan(simplified, current_app=active_app)
+                        if ai_retry:
+                            thought, planned_actions = ai_retry
+                            if planned_actions:
+                                logger.info(f"🧠 AI Brain ({self.ai_engine.active_model}) handled open_ended_task")
+                                for plan in planned_actions:
+                                    res = self._dispatch_action(plan)
+                                    history.append(res)
+                                    if on_step_update:
+                                        on_step_update(plan, res)
+                                self.tts.speak_sync("Done.")
+                                return history
+                    except Exception as e:
+                        logger.warning(f"🧠 AI Brain retry for open_ended_task failed: {e}")
+                # Fall through to ReAct loop below
+            else:
+                logger.info("⚡ Reflex Router — executing via Fast Triage Path (<30ms)")
+                result = self._dispatch_action(direct_action)
+                history.append(result)
+                if on_step_update:
+                    on_step_update(direct_action, result)
+                self.habits.record_interaction(
+                    raw_utterance=intent,
+                    action_type=direct_action.parameters.get("skill", direct_action.action_type.value),
+                    parameters=direct_action.parameters,
+                    thought=direct_action.thought,
+                    success=result.success,
+                )
+                self.tts.speak_sync("Done.")
+                return history
 
-        # 2. Multi-Step ReAct Autonomous Execution Loop
+        # 3. Multi-Step ReAct Autonomous Execution Loop
+        react_matched = False
         for step in range(1, self.max_steps + 1):
             logger.info(f"--- ReAct Step {step}/{self.max_steps} ---")
 
@@ -129,6 +171,7 @@ class AgentOrchestrator:
             if planned_action.action_type == ActionType.TERMINATE:
                 logger.info(f"Goal satisfied: {planned_action.thought}")
                 self.tts.speak_sync("Task completed successfully.")
+                react_matched = True
                 break
 
             # C. Intercept: Audit action through Non-LLM Security Gate
@@ -138,6 +181,7 @@ class AgentOrchestrator:
             if not assessment.is_permitted:
                 logger.warning(f"Action blocked by safety policy: {assessment.violation_reason}")
                 self.tts.speak_sync(f"Action stopped: {assessment.violation_reason}")
+                react_matched = True  # handled, even if blocked
                 break
 
             if assessment.requires_biometric:
@@ -145,11 +189,13 @@ class AgentOrchestrator:
                 if not approved:
                     logger.warning("Biometric verification failed or canceled.")
                     self.tts.speak_sync("Biometric authorization failed. Aborting action.")
+                    react_matched = True
                     break
 
             # D. Act: Dispatch to Native Platform Driver
             exec_result = self.grounding.execute(planned_action)
             history.append(exec_result)
+            react_matched = True
 
             if on_step_update:
                 on_step_update(planned_action, exec_result)
@@ -159,6 +205,11 @@ class AgentOrchestrator:
 
             # Short settlement delay for UI state transition
             time.sleep(0.15)
+
+        # TTS feedback on total failure — no handler matched at all
+        if not react_matched and not history:
+            logger.warning(f"No handler matched for intent: '{intent}'")
+            self.tts.speak_sync("I didn't understand that command.")
 
         return history
 
@@ -357,6 +408,14 @@ class AgentOrchestrator:
                 action_type=ActionType.TERMINATE,
                 target_app=resolved.parameters["app_name"],
             )
+        elif resolved.intent_type == "open_ended_task":
+            # Return a sentinel so execute_user_intent can detect and handle it
+            return PlannedAction(
+                step_id=1,
+                thought=resolved.thought,
+                action_type=ActionType.FOCUS,
+                parameters={"skill": "open_ended_task"},
+            )
 
         return None
 
@@ -485,24 +544,41 @@ class AgentOrchestrator:
                 latency_ms=1.0,
                 state_mutated=True,
             )
+
+        # Single catch-all grounding fallback (duplicate removed)
         return self.grounding.execute(action)
-        return self.grounding.execute(action)
+
+    def _resolve_app_name(self, app_name: str) -> str:
+        """Resolve colloquial app names to their real macOS application names."""
+        return APP_NAME_ALIASES.get(app_name.strip().lower(), app_name.strip())
 
     def _launch_app_native(self, app_name: str, step_id: int) -> ExecutionResult:
         import subprocess
         start_time = time.perf_counter()
+        resolved_name = self._resolve_app_name(app_name)
         try:
             if self.grounding.os_type.value == "macos":
-                subprocess.Popen(["open", "-a", app_name])
+                # Try AppleScript `activate` first — works for apps like WhatsApp
+                # that don't respond well to `open -a`.
+                script = f'tell application "{resolved_name}" to activate'
+                res = subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True,
+                    timeout=3,
+                )
+                if res.returncode != 0:
+                    # Fallback to open -a
+                    logger.debug(f"AppleScript activate failed for '{resolved_name}', falling back to open -a")
+                    subprocess.Popen(["open", "-a", resolved_name])
             elif self.grounding.os_type.value == "windows":
-                subprocess.Popen(["start", app_name], shell=True)
+                subprocess.Popen(["start", resolved_name], shell=True)
             else:
-                subprocess.Popen([app_name])
+                subprocess.Popen([resolved_name])
             return ExecutionResult(
                 step_id=step_id,
                 success=True,
                 action_type=ActionType.LAUNCH_APP,
-                output_message=f"Launched application '{app_name}'",
+                output_message=f"Launched application '{resolved_name}'",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 state_mutated=True,
             )
@@ -511,7 +587,7 @@ class AgentOrchestrator:
                 step_id=step_id,
                 success=False,
                 action_type=ActionType.LAUNCH_APP,
-                output_message=f"Failed to launch '{app_name}': {e}",
+                output_message=f"Failed to launch '{resolved_name}': {e}",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 error=str(e),
             )
@@ -519,21 +595,22 @@ class AgentOrchestrator:
     def _close_app_native(self, app_name: str, step_id: int) -> ExecutionResult:
         import subprocess
         start_time = time.perf_counter()
+        resolved_name = self._resolve_app_name(app_name)
         try:
             if self.grounding.os_type.value == "macos":
-                res = subprocess.run(["osascript", "-e", f'tell application "{app_name}" to quit'], capture_output=True)
+                res = subprocess.run(["osascript", "-e", f'tell application "{resolved_name}" to quit'], capture_output=True)
                 if res.returncode != 0:
                     # Fallback to case-insensitive pkill for background macOS apps
-                    subprocess.run(["pkill", "-i", "-f", app_name], capture_output=True)
+                    subprocess.run(["pkill", "-i", "-f", resolved_name], capture_output=True)
             elif self.grounding.os_type.value == "windows":
-                subprocess.run(["taskkill", "/IM", f"{app_name}.exe", "/F"], check=True)
+                subprocess.run(["taskkill", "/IM", f"{resolved_name}.exe", "/F"], check=True)
             else:
-                subprocess.run(["pkill", "-f", app_name], check=True)
+                subprocess.run(["pkill", "-f", resolved_name], check=True)
             return ExecutionResult(
                 step_id=step_id,
                 success=True,
                 action_type=ActionType.TERMINATE,
-                output_message=f"Closed application '{app_name}'",
+                output_message=f"Closed application '{resolved_name}'",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 state_mutated=True,
             )
@@ -542,7 +619,7 @@ class AgentOrchestrator:
                 step_id=step_id,
                 success=False,
                 action_type=ActionType.TERMINATE,
-                output_message=f"Failed to close '{app_name}': {e}",
+                output_message=f"Failed to close '{resolved_name}': {e}",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 error=str(e),
             )
