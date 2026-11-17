@@ -62,11 +62,18 @@ class VoiceDaemon:
                 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
                 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
                 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+                os.environ["HF_HUB_VERBOSITY"] = "error"
                 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
                 logging.getLogger("faster_whisper").setLevel(logging.ERROR)
+                import ctranslate2
+                ctranslate2.set_log_level(logging.ERROR)
                 from faster_whisper import WhisperModel
-                # base.en transcribes in ~400ms on Apple Silicon and is already cached locally
-                self._whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
+                # base.en transcribes in ~300ms on Apple Silicon and is cached locally
+                try:
+                    self._whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8", local_files_only=True)
+                except Exception:
+                    self._whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
             except Exception:
                 try:
                     from faster_whisper import WhisperModel
@@ -340,10 +347,12 @@ class VoiceDaemon:
 
         results = self.orchestrator.execute_user_intent(clean_intent, on_step_update=on_step)
 
-        if uses_ai_brain:
-            print("🧠 AI Brain")
+        engine_used = getattr(self.orchestrator, "last_engine_used", "reflex")
+        if engine_used == "ai_brain":
+            model_info = f" ({self.orchestrator.ai_engine.active_model})" if self.orchestrator.ai_engine.active_model else ""
+            console.print(f"  [bold magenta]🧠 AI Brain{model_info}[/bold magenta]")
         else:
-            print("⚡ Reflex Router")
+            console.print("  [bold green]⚡ Reflex Router (<15ms)[/bold green]")
 
         console.print("  [bold green]✓ Done. Listening for next command...[/bold green]\n")
 

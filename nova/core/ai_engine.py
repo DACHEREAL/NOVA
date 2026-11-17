@@ -158,7 +158,37 @@ class LocalAIEngine:
         self.timeout = timeout
         self.active_backend: Optional[str] = None  # "ollama", "openai_compatible", None
         self.active_model: Optional[str] = None
-        self._check_connectivity()
+        if self._check_connectivity():
+            self._start_prewarm_thread()
+
+    def _start_prewarm_thread(self) -> None:
+        """Silently warms up the local model in GPU memory with keep_alive=24h so first inference is instant."""
+        import threading
+        t = threading.Thread(target=self._prewarm_model, daemon=True)
+        t.start()
+
+    def _prewarm_model(self) -> None:
+        if self.active_backend != "ollama" or not self.active_model:
+            return
+        try:
+            url = f"{self.base_url}/api/chat"
+            payload = {
+                "model": self.active_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "keep_alive": "24h",
+                "stream": False,
+                "options": {"num_predict": 1},
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "NOVA-Agent"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15.0):
+                logger.debug(f"Pre-warmed {self.active_model} in GPU memory (keep_alive=24h)")
+        except Exception:
+            pass
 
     def _find_ollama_bin(self) -> Optional[str]:
         import shutil
@@ -303,9 +333,8 @@ class LocalAIEngine:
                 return None
 
             return self._parse_llm_plan(raw_json)
-        except (urllib.error.URLError, ConnectionRefusedError, OSError) as e:
-            # Auto-reconnect: if connection failed, try restarting ollama and retry once
-            logger.warning(f"Local AI connection failed ({e}), attempting auto-reconnect...")
+        except (urllib.error.URLError, ConnectionRefusedError, OSError, TimeoutError) as e:
+            logger.debug(f"Local AI endpoint unavailable ({e}), attempting auto-start...")
             if self._ensure_ollama_daemon():
                 try:
                     if self.active_backend == "ollama":
@@ -316,16 +345,15 @@ class LocalAIEngine:
                         return None
                     return self._parse_llm_plan(raw_json)
                 except Exception as retry_err:
-                    logger.warning(f"Retry after auto-reconnect also failed: {retry_err}")
+                    logger.debug(f"Retry after auto-start failed: {retry_err}")
                     return None
-            logger.warning("Auto-reconnect failed, no local LLM available.")
             return None
         except Exception as e:
-            logger.warning(f"Local AI inference failed: {e}")
+            logger.debug(f"Local AI inference note: {e}")
             return None
 
     def _call_ollama(self, prompt: str, system: str) -> Optional[Dict[str, Any]]:
-        """Calls local Ollama REST API with native JSON mode."""
+        """Calls local Ollama REST API with native JSON mode and 24h GPU retention."""
         url = f"{self.base_url}/api/chat"
         payload = {
             "model": self.active_model or self.preferred_model,
@@ -335,6 +363,7 @@ class LocalAIEngine:
             ],
             "format": "json",
             "stream": False,
+            "keep_alive": "24h",
             "options": {
                 "temperature": 0.1,
                 "top_p": 0.9,

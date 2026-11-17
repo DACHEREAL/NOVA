@@ -249,18 +249,13 @@ class DesktopSkills:
                     "music": "Music",
                 }
                 target = alias_map.get(clean_name.lower(), clean_name)
-                script = f'''
-                tell application "{target}"
-                    activate
-                end tell
-                '''
-                res = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=3)
-                if res.returncode == 0:
-                    time.sleep(0.3)
-                    return True
-                # Fallback to open -a
+                # Instant non-blocking open -a (<10ms)
                 subprocess.Popen(["open", "-a", target])
-                time.sleep(0.4)
+                try:
+                    subprocess.Popen(["osascript", "-e", f'tell application "{target}" to activate'])
+                except Exception:
+                    pass
+                time.sleep(0.15)
                 return True
             elif sys.platform == "win32":
                 subprocess.Popen(["start", clean_name], shell=True)
