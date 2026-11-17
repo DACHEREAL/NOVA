@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from typing import Callable, List, Optional
 
@@ -226,8 +227,10 @@ class AgentOrchestrator:
         start_time = time.perf_counter()
         try:
             if self.grounding.os_type.value == "macos":
-                script = f'tell application "{app_name}" to quit'
-                subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+                res = subprocess.run(["osascript", "-e", f'tell application "{app_name}" to quit'], capture_output=True)
+                if res.returncode != 0:
+                    # Fallback to case-insensitive pkill for background macOS apps
+                    subprocess.run(["pkill", "-i", "-f", app_name], capture_output=True)
             elif self.grounding.os_type.value == "windows":
                 subprocess.run(["taskkill", "/IM", f"{app_name}.exe", "/F"], check=True)
             else:
