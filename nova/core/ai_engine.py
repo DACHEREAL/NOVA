@@ -628,7 +628,7 @@ class LocalAIEngine:
                     PlannedAction(
                         step_id=idx,
                         thought=thought,
-                        action_type=action_type_map.get(act_name, ActionType.CUSTOM),
+                        action_type=action_type_map.get(act_name, ActionType.FOCUS),
                         parameters=params_with_skill,
                     )
                 )
