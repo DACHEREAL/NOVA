@@ -148,6 +148,26 @@ class AgentOrchestrator:
                     "query": resolved.parameters["query"],
                 },
             )
+        elif resolved.intent_type == "dictionary_lookup":
+            return PlannedAction(
+                step_id=1,
+                thought=resolved.thought,
+                action_type=ActionType.LAUNCH_APP,
+                parameters={
+                    "skill": "dictionary_lookup",
+                    "word": resolved.parameters["word"],
+                },
+            )
+        elif resolved.intent_type == "open_website":
+            return PlannedAction(
+                step_id=1,
+                thought=resolved.thought,
+                action_type=ActionType.LAUNCH_APP,
+                parameters={
+                    "skill": "open_website",
+                    "site": resolved.parameters["site"],
+                },
+            )
         elif resolved.intent_type == "click_semantic":
             return PlannedAction(
                 step_id=1,
@@ -368,6 +388,10 @@ class AgentOrchestrator:
                 latency_ms=10.0,
                 error="ElementNotFound",
             )
+        elif skill == "dictionary_lookup":
+            return DesktopSkills.lookup_dictionary(action.parameters["word"])
+        elif skill == "open_website":
+            return DesktopSkills.open_website_in_browser(action.parameters["site"])
         elif skill == "navigate_active_tab":
             return DesktopSkills.navigate_active_tab(action.parameters["query"])
         elif skill == "switch_tab":

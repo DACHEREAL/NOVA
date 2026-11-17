@@ -32,6 +32,11 @@ class VoiceDaemon:
     def _get_whisper(self):
         if self._whisper_model is None:
             try:
+                import os
+                import warnings
+                warnings.filterwarnings("ignore", category=UserWarning)
+                os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+                logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
                 from faster_whisper import WhisperModel
                 # Runs locally on Apple Silicon CPU / Metal in int8 quantization (<150MB)
                 self._whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
@@ -88,58 +93,92 @@ class VoiceDaemon:
         from rich.panel import Panel
 
         console = Console()
-        device_id, device_name = self._get_active_input_device(sd)
+        self.running = True
 
         console.print(Panel(
             f"[bold cyan]✦ N.O.V.A. Continuous Voice Daemon Active[/bold cyan]\n"
-            f"[green]🎙️  Active Input: [bold white]{device_name}[/bold white][/green]\n"
-            f"[dim]Auto-detects earphones/AirPods & follows system default audio.[/dim]\n"
+            f"[dim]Auto-detects earphones/AirPods & dynamically falls back on disconnect.[/dim]\n"
             f"[dim]Speak: 'Nova, open Safari' or 'Nova, close WhatsApp' (Ctrl+C to stop).[/dim]",
             border_style="cyan"
         ))
 
-        self.running = True
+        # Resilient hardware auto-reconnect loop
+        while self.running:
+            try:
+                device_id, device_name = self._get_active_input_device(sd)
+                console.print(f"\n[green]🎙️  Active Input: [bold white]{device_name}[/bold white][/green]")
+                print(f"🎙️  Ready and listening through '{device_name}'...")
 
-        # Bind InputStream directly to the detected active audio input device
-        with sd.InputStream(
-            device=device_id,
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            callback=audio_callback,
-            blocksize=int(self.sample_rate * 0.2),  # 200ms blocks
-        ):
-            print(f"\n🎙️  Ready and listening through '{device_name}'...")
-            speech_buffer = []
-            is_speaking = False
-            silence_chunks = 0
-
-            while self.running:
-                try:
-                    chunk = AUDIO_QUEUE.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-
-                # Compute RMS audio volume
-                rms = np.sqrt(np.mean(np.square(chunk)))
-
-                # Voice activity threshold (~0.02 for normal voice near laptop)
-                if rms > 0.025:
-                    if not is_speaking:
-                        is_speaking = True
-                        console.print("  [bold green]● Speech detected...[/bold green]", end="\r")
-                    speech_buffer.append(chunk)
+                with sd.InputStream(
+                    device=device_id,
+                    samplerate=self.sample_rate,
+                    channels=1,
+                    dtype="float32",
+                    callback=audio_callback,
+                    blocksize=int(self.sample_rate * 0.2),  # 200ms blocks
+                ) as stream:
+                    speech_buffer = []
+                    is_speaking = False
                     silence_chunks = 0
-                else:
-                    if is_speaking:
-                        silence_chunks += 1
-                        # If silence persists for ~1 second after speaking, process the utterance
-                        if silence_chunks > 5:
-                            is_speaking = False
-                            console.print("\n  [bold cyan]⚡ Processing speech segment...[/bold cyan]")
-                            self._process_utterance(speech_buffer, console)
-                            speech_buffer.clear()
+                    device_check_tick = 0
+
+                    while self.running:
+                        # Detect hardware teardown or stream stoppage (e.g. closing earbuds)
+                        if not stream.active or stream.stopped:
+                            raise RuntimeError(f"Audio stream on '{device_name}' became inactive")
+
+                        try:
+                            chunk = AUDIO_QUEUE.get(timeout=0.25)
+                        except queue.Empty:
+                            if not stream.active or stream.stopped:
+                                raise RuntimeError(f"Audio stream on '{device_name}' stopped")
+                            device_check_tick += 1
+                            # Periodically check if new audio device (e.g. earbuds plugged in) appeared
+                            if device_check_tick % 12 == 0:
+                                new_id, new_name = self._get_active_input_device(sd)
+                                if new_id != device_id:
+                                    console.print(f"\n[cyan]🎧 Audio device change detected: {new_name}. Switching...[/cyan]")
+                                    break
+                            continue
+
+                        # Compute RMS audio volume
+                        rms = np.sqrt(np.mean(np.square(chunk)))
+
+                        # Voice activity threshold (~0.025 for normal voice near laptop)
+                        if rms > 0.025:
+                            if not is_speaking:
+                                is_speaking = True
+                                console.print("  [bold green]● Speech detected...[/bold green]", end="\r")
+                            speech_buffer.append(chunk)
                             silence_chunks = 0
+                        else:
+                            if is_speaking:
+                                silence_chunks += 1
+                                # If silence persists for ~1 second after speaking, process the utterance
+                                if silence_chunks > 5:
+                                    is_speaking = False
+                                    console.print("\n  [bold cyan]⚡ Processing speech segment...[/bold cyan]")
+                                    self._process_utterance(speech_buffer, console)
+                                    speech_buffer.clear()
+                                    silence_chunks = 0
+            except Exception as stream_err:
+                if not self.running:
+                    break
+                console.print(f"\n[bold yellow]⚠️  Audio hardware changed or disconnected: {stream_err}[/bold yellow]")
+                console.print("[cyan]🔄 Seamlessly switching to system microphone in 1s...[/cyan]")
+                # Drain audio queue to prevent stale buffer playback
+                while not AUDIO_QUEUE.empty():
+                    try:
+                        AUDIO_QUEUE.get_nowait()
+                    except Exception:
+                        break
+                # Invalidate CoreAudio / PortAudio device cache
+                try:
+                    sd._terminate()
+                    sd._initialize()
+                except Exception:
+                    pass
+                time.sleep(1.0)
 
     def _process_utterance(self, speech_chunks, console):
         if not speech_chunks:

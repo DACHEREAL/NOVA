@@ -38,7 +38,110 @@ class NaturalLanguageIntentResolver:
         tokens = set(re.findall(r"\b\w+\b", text_clean))
 
         # -------------------------------------------------------------
-        # 1. SYSTEM AUDIO & HARDWARE CONTROLS
+        # 1. DICTIONARY & WORD DEFINITIONS
+        # E.g. "type help in dictionary", "meaning of help", "define help", "search help in dictionary"
+        # -------------------------------------------------------------
+        if "dictionary" in tokens or any(w in text_clean for w in ["meaning of", "definition of", "define ", "what does", "what is the meaning of"]):
+            target_word = text_clean
+            target_word = re.sub(
+                r"\b(what is the meaning of|what does|meaning of|definition of|define|search for|search|look up|type|just|open|and|in the dictionary|on the dictionary|in dictionary|on dictionary|the dictionary|dictionary|mean|word|the|a|for|of|is|what)\b",
+                " ",
+                target_word,
+                flags=re.IGNORECASE,
+            )
+            target_word = re.sub(r"\s+", " ", target_word).strip()
+            if target_word:
+                return ResolvedIntent(
+                    "dictionary_lookup",
+                    0.98,
+                    {"word": target_word},
+                    f"Looking up definition of '{target_word}' in Dictionary."
+                )
+
+        # -------------------------------------------------------------
+        # 2. OPEN WEBSITE / WEB APP ON CHROME / BROWSER
+        # E.g. "open facebook on chrome", "open fb on chrome", "open facebook chrome", "open fb chrome", "open facebook"
+        # -------------------------------------------------------------
+        known_websites = {
+            "facebook", "fb", "instagram", "insta", "twitter", "x", "reddit",
+            "youtube", "yt", "netflix", "amazon", "github", "chatgpt", "openai",
+            "linkedin", "gmail", "g-mail", "wikipedia", "docs", "google docs",
+            "google word", "drive", "google drive", "whatsapp web"
+        }
+
+        # Explicit website invocation: e.g. "open facebook on chrome", "open fb chrome"
+        open_web_match = re.search(
+            r"^(open|go to|launch)\s+(?P<site>[a-zA-Z0-9_\-\. ]+?)\s+((on|in)\s+)?(chrome|safari|browser|google)(\s+tab)?$",
+            text_clean,
+            flags=re.IGNORECASE,
+        ) or re.search(
+            r"^(on|in)\s+(chrome|safari|browser|google)\s+(open|go to|launch)\s+(?P<site>[a-zA-Z0-9_\-\. ]+)",
+            text_clean,
+            flags=re.IGNORECASE,
+        )
+        if open_web_match:
+            site = open_web_match.group("site").strip()
+            if site and site.lower() not in ["chrome", "safari", "google", "browser"]:
+                return ResolvedIntent(
+                    "open_website",
+                    0.96,
+                    {"site": site},
+                    f"Opening website '{site}' in Chrome."
+                )
+
+        # Direct open web service: e.g. "open facebook", "open fb", "open reddit", "open google word"
+        open_direct = re.search(r"^(open|go to|launch)\s+(?P<target>[a-zA-Z0-9_\-\. ]+)$", text_clean, flags=re.IGNORECASE)
+        if open_direct:
+            target = open_direct.group("target").strip().lower()
+            if target in known_websites or target.endswith((".com", ".org", ".net", ".io", ".co")):
+                return ResolvedIntent(
+                    "open_website",
+                    0.95,
+                    {"site": target},
+                    f"Opening website '{target}' in Chrome."
+                )
+
+        # -------------------------------------------------------------
+        # 3. CHAINED IN-APP SEARCH & MESSAGE
+        # E.g. "search frosty in whatsapp and type hi", "in whatsapp search frosty and send hi",
+        # "open whatsapp and search frosty and type hi", "send frosty a message on whatsapp saying hi"
+        # -------------------------------------------------------------
+        m_chain = (
+            re.search(
+                r"(?:open|launch)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:and|then)?\s*(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+and\s+(?:type|send|say|message)\s+(?P<msg>.+)",
+                text_clean, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+                text_clean, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"(?:in|on)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:search|find)(?:\s+for)?\s+(?P<contact>[a-zA-Z0-9 ]+?)\s+and\s+(?:type|send|say|message|tell\s+\w+)\s+(?P<msg>.+)",
+                text_clean, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"(?:send|text|message|tell)\s+(?:(?:to|a\s+message\s+to)\s+)?(?P<contact>[a-zA-Z0-9 ]+?)\s+(?:a\s+message\s+)?(?:on|in)\s+(?P<app>whatsapp|slack|telegram|messages)\s+(?:saying|that|with)?\s*(?P<msg>.+)",
+                text_clean, flags=re.IGNORECASE
+            )
+            or re.search(
+                r"(?:send|text|message|tell)\s+(?:(?:to|a\s+message\s+to)\s+)?(?P<contact>[a-zA-Z0-9 ]+?)\s+(?:saying|that|with)?\s*(?P<msg>.+?)\s+(?:on|in)\s+(?P<app>whatsapp|slack|telegram|messages)$",
+                text_clean, flags=re.IGNORECASE
+            )
+        )
+        if m_chain:
+            app = m_chain.group("app").strip()
+            contact = m_chain.group("contact").strip()
+            raw_msg = m_chain.group("msg").strip()
+            msg = re.sub(r"^(a\s+message\s+(saying|that|with)\s+|saying\s+|that\s+)", "", raw_msg, flags=re.IGNORECASE).strip()
+            return ResolvedIntent(
+                "send_message",
+                0.98,
+                {"app": app, "contact": contact, "message": msg},
+                f"Opening {app.title()}, searching '{contact}', and sending '{msg}'."
+            )
+
+        # -------------------------------------------------------------
+        # 4. SYSTEM AUDIO & HARDWARE CONTROLS
         # -------------------------------------------------------------
         if any(w in tokens for w in ["volume", "sound", "audio", "louder", "quieter", "mute", "unmute"]):
             if any(w in tokens for w in ["up", "increase", "raise", "higher", "louder", "boost"]):

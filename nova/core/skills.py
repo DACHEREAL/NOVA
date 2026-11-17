@@ -70,6 +70,98 @@ class DesktopSkills:
             )
 
     @staticmethod
+    def open_website_in_browser(site_name: str, browser: str = "Google Chrome") -> ExecutionResult:
+        """Resolves any website or web app (facebook, fb, twitter, amazon, etc.) and opens it in Chrome/Safari."""
+        clean = site_name.strip().lower()
+        site_map = {
+            "fb": "https://www.facebook.com",
+            "facebook": "https://www.facebook.com",
+            "insta": "https://www.instagram.com",
+            "instagram": "https://www.instagram.com",
+            "twitter": "https://www.x.com",
+            "x": "https://www.x.com",
+            "whatsapp": "https://web.whatsapp.com",
+            "whatsapp web": "https://web.whatsapp.com",
+            "yt": "https://www.youtube.com",
+            "youtube": "https://www.youtube.com",
+            "netflix": "https://www.netflix.com",
+            "amazon": "https://www.amazon.com",
+            "reddit": "https://www.reddit.com",
+            "github": "https://www.github.com",
+            "chatgpt": "https://chatgpt.com",
+            "openai": "https://chatgpt.com",
+            "linkedin": "https://www.linkedin.com",
+            "spotify": "https://open.spotify.com",
+            "gmail": "https://mail.google.com",
+            "g-mail": "https://mail.google.com",
+            "docs": "https://docs.google.com",
+            "google docs": "https://docs.google.com",
+            "google word": "https://docs.google.com",
+            "drive": "https://drive.google.com",
+            "google drive": "https://drive.google.com",
+            "wikipedia": "https://www.wikipedia.org",
+        }
+
+        if clean in site_map:
+            url = site_map[clean]
+        elif clean.startswith("http://") or clean.startswith("https://"):
+            url = clean
+        elif "." in clean:
+            url = f"https://{clean}"
+        else:
+            url = f"https://www.{clean}.com"
+
+        return DesktopSkills.navigate_active_tab(url)
+
+    @staticmethod
+    def lookup_dictionary(word: str) -> ExecutionResult:
+        """Opens macOS Dictionary directly to the target definition and searches for it."""
+        start_time = time.perf_counter()
+        clean_word = word.strip().strip(".?!,'\"")
+        clean_word = re.sub(
+            r"\b(what is the meaning of|what does|meaning of|definition of|define|search for|search|look up|type|just|open|and|in the dictionary|on the dictionary|in dictionary|on dictionary|the dictionary|dictionary|mean|word|the|a|for|of|is|what)\b",
+            " ",
+            clean_word,
+            flags=re.IGNORECASE,
+        )
+        clean_word = re.sub(r"\s+", " ", clean_word).strip()
+        if not clean_word:
+            clean_word = "help"
+
+        try:
+            if sys.platform == "darwin":
+                # Activate Dictionary, trigger Find (Cmd+F), select existing text (Cmd+A), and type clean word
+                script = f'''
+                tell application "Dictionary"
+                    activate
+                end tell
+                delay 0.3
+                tell application "System Events"
+                    tell process "Dictionary"
+                        set frontmost to true
+                        keystroke "f" using command down
+                        delay 0.1
+                        keystroke "a" using command down
+                    end tell
+                end tell
+                '''
+                subprocess.run(["osascript", "-e", script], capture_output=True)
+                time.sleep(0.15)
+                DesktopSkills.type_text(clean_word, press_enter=True)
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.LAUNCH_APP,
+                    output_message=f"Looked up '{clean_word}' in Dictionary",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
+            else:
+                return DesktopSkills.open_web_search("google", f"define {clean_word}")
+        except Exception as e:
+            return DesktopSkills.open_web_search("google", f"define {clean_word}")
+
+    @staticmethod
     def focus_app(app_name: str) -> bool:
         """Brings the designated application window to the foreground."""
         clean_name = app_name.strip()
@@ -205,6 +297,9 @@ class DesktopSkills:
                         if (count of windows) > 0 then
                             set URL of active tab of front window to "{url}"
                             return "ok"
+                        else
+                            open location "{url}"
+                            return "ok"
                         end if
                     end tell
                 else if isSafari then
@@ -213,10 +308,15 @@ class DesktopSkills:
                         if (count of windows) > 0 then
                             set URL of current tab of front window to "{url}"
                             return "ok"
+                        else
+                            open location "{url}"
+                            return "ok"
                         end if
                     end tell
+                else
+                    do shell script "open " & quoted form of "{url}"
+                    return "ok"
                 end if
-                return "fallback"
                 '''
                 res = subprocess.run(["osascript", "-e", as_nav], capture_output=True, text=True)
                 if "ok" in res.stdout:
@@ -668,21 +768,45 @@ class DesktopSkills:
     def send_message_flow(app: str, contact: str, message: str) -> ExecutionResult:
         """Brings messaging app to front, searches contact, and sends the message."""
         start_time = time.perf_counter()
-        DesktopSkills.focus_app(app)
-        time.sleep(0.35)
-        # Search contact via Cmd+F
-        DesktopSkills.press_hotkey(["command", "f"])
-        time.sleep(0.2)
-        DesktopSkills.type_text(contact, press_enter=True)
-        time.sleep(0.35)
-        # Focus chat input, type message, and hit Return
-        DesktopSkills.type_text(message, press_enter=True)
-        return ExecutionResult(
-            step_id=1,
-            success=True,
-            action_type=ActionType.TYPE_TEXT,
-            output_message=f"Sent message to '{contact}' on {app.title()}: \"{message}\"",
-            latency_ms=(time.perf_counter() - start_time) * 1000,
-            state_mutated=True,
-        )
+        target_app = "WhatsApp" if app.lower() == "whatsapp" else app.title()
+
+        is_fresh = False
+        if sys.platform == "darwin":
+            try:
+                check_running = subprocess.run(
+                    ["osascript", "-e", f'tell application "System Events" to (name of processes) contains "{target_app}"'],
+                    capture_output=True, text=True
+                )
+                if "false" in check_running.stdout.lower():
+                    is_fresh = True
+            except Exception:
+                pass
+
+        DesktopSkills.focus_app(target_app)
+        time.sleep(1.2 if is_fresh else 0.5)
+
+        if sys.platform == "darwin":
+            # In WhatsApp, Cmd+F focuses search bar
+            DesktopSkills.press_hotkey(["command", "f"])
+            time.sleep(0.3)
+            # Select all and replace with contact query
+            DesktopSkills.press_hotkey(["command", "a"])
+            time.sleep(0.1)
+            DesktopSkills.type_text(contact, press_enter=True)
+            time.sleep(0.5)
+            # Press return to open contact chat
+            DesktopSkills.press_hotkey(["return"])
+            time.sleep(0.4)
+            # Type message into chat box using clipboard for 100% fidelity and send
+            DesktopSkills.type_text(message, press_enter=True, use_clipboard=True)
+            return ExecutionResult(
+                step_id=1,
+                success=True,
+                action_type=ActionType.TYPE_TEXT,
+                output_message=f"Sent message to '{contact}' on {target_app}: \"{message}\"",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                state_mutated=True,
+            )
+        else:
+            return DesktopSkills.type_text(message, press_enter=True)
 
