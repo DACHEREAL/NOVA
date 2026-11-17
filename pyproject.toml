@@ -47,3 +47,8 @@ dev = [
 
 [project.scripts]
 nova = "nova.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nova*"]
+
