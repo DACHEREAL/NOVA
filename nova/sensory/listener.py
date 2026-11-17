@@ -26,6 +26,17 @@ class VoiceDaemon:
         self.orchestrator = orchestrator
         self.sample_rate = sample_rate
         self.running = False
+        self._whisper_model = None
+
+    def _get_whisper(self):
+        if self._whisper_model is None:
+            try:
+                from faster_whisper import WhisperModel
+                # Runs locally on Apple Silicon CPU / Metal in int8 quantization (<150MB)
+                self._whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
+            except Exception:
+                self._whisper_model = False
+        return self._whisper_model
 
     def start_listening(self):
         import sounddevice as sd
@@ -108,15 +119,27 @@ class VoiceDaemon:
         console.print("  [bold green]✓ Done. Listening for next command...[/bold green]\n")
 
     def _transcribe(self, speech_chunks, console) -> str:
-        """Transcribes audio buffer using speech recognition with clear diagnostics."""
+        """Transcribes audio buffer using local offline Whisper first, then fallbacks."""
+        audio_data = np.concatenate(speech_chunks, axis=0).flatten().astype(np.float32)
+
+        # 1. Try Local Faster-Whisper (100% Offline & Highly Accurate)
+        whisper = self._get_whisper()
+        if whisper:
+            try:
+                segments, info = whisper.transcribe(audio_data, beam_size=1, language="en")
+                text = " ".join([seg.text for seg in segments]).strip()
+                if text:
+                    return text
+            except Exception as w_err:
+                console.print(f"  [dim red]Local Whisper error: {w_err}[/dim red]")
+
+        # 2. Try SpeechRecognition as fallback
         try:
             import speech_recognition as sr
             import io
             import wave
 
-            audio_data = np.concatenate(speech_chunks, axis=0)
             pcm16 = (audio_data * 32767).astype(np.int16)
-
             wav_io = io.BytesIO()
             with wave.open(wav_io, "wb") as wf:
                 wf.setnchannels(1)
@@ -126,18 +149,19 @@ class VoiceDaemon:
             wav_io.seek(0)
 
             r = sr.Recognizer()
+            r.energy_threshold = 300
             with sr.AudioFile(wav_io) as source:
                 audio = r.record(source)
                 try:
-                    return r.recognize_google(audio)
+                    return r.recognize_google(audio, timeout=3)
                 except sr.UnknownValueError:
-                    console.print("  [dim yellow](Audio was not clear enough to recognize words)[/dim yellow]")
+                    console.print("  [dim yellow](Audio not recognized as speech)[/dim yellow]")
                     return ""
                 except sr.RequestError as req_err:
-                    console.print(f"  [red]STT Request Error: {req_err}[/red]")
+                    console.print(f"  [red]STT Request Error (network blocked): {req_err}[/red]")
                     return ""
         except ImportError:
-            console.print("  [bold red]SpeechRecognition library not installed. Run `pip install SpeechRecognition`[/bold red]")
+            console.print("  [bold red]Please run: pip install faster-whisper[/bold red]")
             return ""
         except Exception as e:
             console.print(f"  [red]Transcription error: {e}[/red]")
