@@ -108,6 +108,9 @@ class AgentOrchestrator:
         """Bypasses deep LLM reasoning for deterministic single-shot OS commands."""
         lowered = intent.lower().strip()
 
+        # Clean punctuation from intent (. , ! ?)
+        lowered = re.sub(r"[.?!,]+$", "", lowered).strip()
+
         if "side by side" in lowered or "arrange windows" in lowered:
             return PlannedAction(
                 step_id=1,
@@ -116,7 +119,7 @@ class AgentOrchestrator:
             )
 
         if lowered.startswith("open ") or lowered.startswith("launch "):
-            app_name = lowered.replace("open ", "").replace("launch ", "").strip()
+            app_name = lowered.replace("open ", "").replace("launch ", "").strip().strip(".?!,'\"")
             return PlannedAction(
                 step_id=1,
                 thought=f"Directly launching application {app_name}",
@@ -125,7 +128,7 @@ class AgentOrchestrator:
             )
 
         if lowered.startswith("close ") or lowered.startswith("quit "):
-            app_name = lowered.replace("close ", "").replace("quit ", "").strip()
+            app_name = lowered.replace("close ", "").replace("quit ", "").strip().strip(".?!,'\"")
             return PlannedAction(
                 step_id=1,
                 thought=f"Terminating application {app_name}",

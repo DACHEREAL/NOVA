@@ -159,7 +159,7 @@ class VoiceDaemon:
             with sr.AudioFile(wav_io) as source:
                 audio = r.record(source)
                 try:
-                    return r.recognize_google(audio, timeout=3)
+                    return r.recognize_google(audio)
                 except sr.UnknownValueError:
                     console.print("  [dim yellow](Audio not recognized as speech)[/dim yellow]")
                     return ""
