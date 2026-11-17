@@ -17,6 +17,7 @@ from nova.grounding.hybrid_grounder import HybridGroundingEngine
 from nova.security.interceptor import SecurityInterceptor
 from nova.sensory.tts import StreamingTTS
 from nova.memory.lancedb_store import LocalMemoryStore
+from nova.core.skills import DesktopSkills
 
 logger = logging.getLogger("nova.core.orchestrator")
 
@@ -106,12 +107,99 @@ class AgentOrchestrator:
         return history
 
     def _triage_fast_intent(self, intent: str) -> Optional[PlannedAction]:
-        """Bypasses deep LLM reasoning for deterministic single-shot OS commands."""
+        """Deep multi-domain intent triage routing to native OS and browser automation skills."""
         lowered = intent.lower().strip()
-
-        # Clean punctuation from intent (. , ! ?)
         lowered = re.sub(r"[.?!,]+$", "", lowered).strip()
 
+        # 1. Web Search Intent (e.g. "search for mr beast on youtube", "search python on google")
+        web_match = re.match(
+            r"^search\s+(for\s+)?(?P<query>.+?)\s+on\s+(?P<platform>youtube|google|reddit|github)$",
+            lowered,
+        )
+        if web_match:
+            platform = web_match.group("platform")
+            query = web_match.group("query")
+            return PlannedAction(
+                step_id=1,
+                thought=f"Executing web search for '{query}' on {platform.title()}",
+                action_type=ActionType.LAUNCH_APP,
+                parameters={"skill": "web_search", "platform": platform, "query": query},
+            )
+
+        # 1b. Direct platform search: "open youtube and search mr beast"
+        direct_web = re.match(
+            r"^open\s+(?P<platform>youtube|google|reddit|github)(\s+and\s+search\s+(for\s+)?(?P<query>.+))?$",
+            lowered,
+        )
+        if direct_web:
+            platform = direct_web.group("platform")
+            query = direct_web.group("query") or ""
+            return PlannedAction(
+                step_id=1,
+                thought=f"Opening {platform.title()}" + (f" and searching '{query}'" if query else ""),
+                action_type=ActionType.LAUNCH_APP,
+                parameters={"skill": "web_search", "platform": platform, "query": query},
+            )
+
+        # 2. In-App Contextual Actions: "in WhatsApp search for Mom", "in Word search X"
+        in_app_search = re.match(r"^in\s+(?P<app>[a-zA-Z0-9 ]+?)\s+search\s+(for\s+)?(?P<query>.+)$", lowered)
+        if in_app_search:
+            app = in_app_search.group("app").strip()
+            query = in_app_search.group("query").strip()
+            return PlannedAction(
+                step_id=1,
+                thought=f"Focusing '{app}', opening search, and querying '{query}'",
+                action_type=ActionType.TYPE_TEXT,
+                parameters={"skill": "in_app_search", "app": app, "query": query},
+            )
+
+        # 3. Semantic UI Element Tapping: "tap on create on Microsoft Word", "click new on Word"
+        tap_in_app = re.match(r"^(tap|click)(\s+on)?\s+(?P<element>.+?)\s+on\s+(?P<app>[a-zA-Z0-9 ]+)$", lowered)
+        if tap_in_app:
+            elem = tap_in_app.group("element").strip()
+            app = tap_in_app.group("app").strip()
+            return PlannedAction(
+                step_id=1,
+                thought=f"Focusing '{app}' and tapping on '{elem}'",
+                action_type=ActionType.CLICK,
+                parameters={"skill": "click_element_in_app", "element": elem, "app": app},
+            )
+
+        # 3b. Active Window Tapping: "tap on create", "click submit"
+        tap_active = re.match(r"^(tap|click)(\s+on)?\s+(?P<element>[a-zA-Z0-9 ]+)$", lowered)
+        if tap_active:
+            elem = tap_active.group("element").strip()
+            return PlannedAction(
+                step_id=1,
+                thought=f"Tapping on '{elem}' in active window",
+                action_type=ActionType.CLICK,
+                parameters={"skill": "click_active_element", "element": elem},
+            )
+
+        # 4. Direct Text Entry: "type hello world", "type My name is Nova"
+        type_match = re.match(r"^type\s+(?P<text>.+)$", lowered)
+        if type_match:
+            text = type_match.group("text")
+            return PlannedAction(
+                step_id=1,
+                thought=f"Typing '{text}' into focused element",
+                action_type=ActionType.TYPE_TEXT,
+                parameters={"skill": "type_text", "text": text},
+            )
+
+        # 5. File System Operations: "move file invoice to documents", "move photo to desktop"
+        move_file_match = re.match(r"^move\s+(file\s+)?(?P<src>.+?)\s+to\s+(?P<dest>[a-zA-Z0-9_-]+)$", lowered)
+        if move_file_match:
+            src = move_file_match.group("src").strip()
+            dest = move_file_match.group("dest").strip()
+            return PlannedAction(
+                step_id=1,
+                thought=f"Moving file '{src}' to '{dest}'",
+                action_type=ActionType.EXECUTE_SHELL,
+                parameters={"skill": "move_file", "src": src, "dest": dest},
+            )
+
+        # 6. Window Layout & Snapping
         if "side by side" in lowered or "arrange windows" in lowered:
             return PlannedAction(
                 step_id=1,
@@ -119,6 +207,7 @@ class AgentOrchestrator:
                 action_type=ActionType.RESIZE_WINDOW,
             )
 
+        # 7. Basic App Lifecycle (Open / Close)
         if lowered.startswith("open ") or lowered.startswith("launch "):
             app_name = lowered.replace("open ", "").replace("launch ", "").strip().strip(".?!,'\"")
             return PlannedAction(
@@ -148,8 +237,6 @@ class AgentOrchestrator:
         history: List[ExecutionResult],
     ) -> PlannedAction:
         """Invokes local model with grammar constraints to generate next deterministic action."""
-        # In full production, this calls llama.cpp / MLX with structured JSON logit mask
-        # Example demonstration heuristic for test harness
         if step_id > 1:
             return PlannedAction(
                 step_id=step_id,
@@ -157,7 +244,6 @@ class AgentOrchestrator:
                 action_type=ActionType.TERMINATE,
             )
 
-        # First step: search interactive buttons in active window
         for node in nodes:
             if "search" in node.name.lower() or "find" in node.name.lower():
                 return PlannedAction(
@@ -176,6 +262,66 @@ class AgentOrchestrator:
         )
 
     def _dispatch_action(self, action: PlannedAction) -> ExecutionResult:
+        # Check skill parameters
+        skill = action.parameters.get("skill")
+        if skill == "web_search":
+            platform = action.parameters.get("platform", "google")
+            query = action.parameters.get("query", "")
+            return DesktopSkills.open_web_search(platform, query)
+
+        elif skill == "in_app_search":
+            app = action.parameters.get("app", "")
+            query = action.parameters.get("query", "")
+            DesktopSkills.focus_app(app)
+            time.sleep(0.3)
+            DesktopSkills.press_hotkey(["cmd", "f"])
+            time.sleep(0.2)
+            return DesktopSkills.type_text(query, press_enter=True)
+
+        elif skill == "click_element_in_app":
+            app = action.parameters.get("app", "")
+            elem = action.parameters.get("element", "")
+            DesktopSkills.focus_app(app)
+            time.sleep(0.4)
+            tree = self.grounding.inspect_ui()
+            coords = DesktopSkills.click_semantic_element(tree, elem)
+            if coords:
+                return DesktopSkills.physical_click(coords[0], coords[1])
+            # If not in tree, try shortcut or center fallback
+            return ExecutionResult(
+                step_id=action.step_id,
+                success=False,
+                action_type=ActionType.CLICK,
+                output_message=f"Could not locate button matching '{elem}' in {app}",
+                latency_ms=10.0,
+                error="ElementNotFound",
+            )
+
+        elif skill == "click_active_element":
+            elem = action.parameters.get("element", "")
+            tree = self.grounding.inspect_ui()
+            coords = DesktopSkills.click_semantic_element(tree, elem)
+            if coords:
+                return DesktopSkills.physical_click(coords[0], coords[1])
+            return ExecutionResult(
+                step_id=action.step_id,
+                success=False,
+                action_type=ActionType.CLICK,
+                output_message=f"Could not locate '{elem}' in active window",
+                latency_ms=10.0,
+                error="ElementNotFound",
+            )
+
+        elif skill == "type_text":
+            text = action.parameters.get("text", "")
+            return DesktopSkills.type_text(text, press_enter=False)
+
+        elif skill == "move_file":
+            src = action.parameters.get("src", "")
+            dest = action.parameters.get("dest", "")
+            return DesktopSkills.move_file(src, dest)
+
+        # Standard Actions
         if action.action_type == ActionType.LAUNCH_APP and action.target_app:
             return self._launch_app_native(action.target_app, action.step_id)
         elif action.action_type == ActionType.TERMINATE and action.target_app:
