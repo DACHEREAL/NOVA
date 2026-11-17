@@ -101,6 +101,44 @@ class LocalAIEngine:
         self.active_model: Optional[str] = None
         self._check_connectivity()
 
+    def _find_ollama_bin(self) -> Optional[str]:
+        import shutil
+        return shutil.which("ollama") or (
+            "/opt/homebrew/bin/ollama" if os.path.exists("/opt/homebrew/bin/ollama") else None
+        ) or (
+            "/usr/local/bin/ollama" if os.path.exists("/usr/local/bin/ollama") else None
+        )
+
+    def _ensure_ollama_daemon(self) -> bool:
+        """If ollama binary is installed on Mac/Linux but daemon is stopped, auto-starts 'ollama serve'."""
+        ollama_bin = self._find_ollama_bin()
+        if not ollama_bin:
+            return False
+
+        import subprocess
+        import time
+        logger.info(f"Ollama CLI found at '{ollama_bin}'. Auto-starting server daemon in background...")
+        try:
+            subprocess.Popen(
+                [ollama_bin, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            time.sleep(1.5)
+            req = urllib.request.Request(f"{self.base_url}/api/tags", headers={"User-Agent": "NOVA-Agent"})
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    models = [m.get("name", "") for m in data.get("models", [])]
+                    self.active_backend = "ollama"
+                    self.active_model = self._select_best_model(models)
+                    logger.info(f"Ollama server auto-started and connected with model: '{self.active_model}'")
+                    return True
+        except Exception as e:
+            logger.debug(f"Could not auto-start ollama serve: {e}")
+        return False
+
     def _check_connectivity(self) -> bool:
         """Probes local endpoints to detect active LLM runner and available models."""
         # 1. Probe Ollama API (/api/tags)
@@ -133,6 +171,10 @@ class LocalAIEngine:
                         return True
             except Exception:
                 continue
+
+        # 3. If local Ollama binary exists, try auto-starting 'ollama serve'
+        if self._ensure_ollama_daemon():
+            return True
 
         self.active_backend = None
         self.active_model = None
