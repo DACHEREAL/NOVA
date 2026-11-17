@@ -86,9 +86,10 @@ class VoiceDaemon:
         if not speech_chunks:
             return
 
-        # Attempt to use installed offline speech recognition or local whisper/sherpa
-        transcript = self._transcribe(speech_chunks)
+        # Attempt to use installed speech recognition backend
+        transcript = self._transcribe(speech_chunks, console)
         if not transcript:
+            console.print("  [dim]Could not resolve speech into words. Still listening...[/dim]\n")
             return
 
         console.print(f"  [yellow]Heard:[/yellow] [italic]\"{transcript}\"[/italic]")
@@ -106,15 +107,14 @@ class VoiceDaemon:
         results = self.orchestrator.execute_user_intent(clean_intent, on_step_update=on_step)
         console.print("  [bold green]✓ Done. Listening for next command...[/bold green]\n")
 
-    def _transcribe(self, speech_chunks) -> str:
-        """Transcribes audio buffer using available offline ASR backends."""
+    def _transcribe(self, speech_chunks, console) -> str:
+        """Transcribes audio buffer using speech recognition with clear diagnostics."""
         try:
             import speech_recognition as sr
             import io
             import wave
 
             audio_data = np.concatenate(speech_chunks, axis=0)
-            # Normalize to 16-bit PCM
             pcm16 = (audio_data * 32767).astype(np.int16)
 
             wav_io = io.BytesIO()
@@ -128,15 +128,17 @@ class VoiceDaemon:
             r = sr.Recognizer()
             with sr.AudioFile(wav_io) as source:
                 audio = r.record(source)
-                return r.recognize_google(audio)
-        except Exception:
-            pass
-
-        # Native macOS SFSpeechRecognizer fallback via PyObjC
-        try:
-            import subprocess
-            # Query macOS native dictation if available
-        except Exception:
-            pass
-
-        return ""
+                try:
+                    return r.recognize_google(audio)
+                except sr.UnknownValueError:
+                    console.print("  [dim yellow](Audio was not clear enough to recognize words)[/dim yellow]")
+                    return ""
+                except sr.RequestError as req_err:
+                    console.print(f"  [red]STT Request Error: {req_err}[/red]")
+                    return ""
+        except ImportError:
+            console.print("  [bold red]SpeechRecognition library not installed. Run `pip install SpeechRecognition`[/bold red]")
+            return ""
+        except Exception as e:
+            console.print(f"  [red]Transcription error: {e}[/red]")
+            return ""
