@@ -283,11 +283,14 @@ class DesktopSkills:
         # Search for source file across home directories
         found_source: Optional[Path] = None
         for search_dir in [user_home / "Downloads", user_home / "Desktop", user_home / "Documents"]:
-            if search_dir.exists():
-                for p in search_dir.glob(f"*{source_name}*"):
-                    if p.is_file():
-                        found_source = p
-                        break
+            try:
+                if search_dir.exists():
+                    for p in search_dir.glob(f"*{source_name}*"):
+                        if p.is_file():
+                            found_source = p
+                            break
+            except (PermissionError, OSError):
+                continue
             if found_source:
                 break
 
@@ -321,3 +324,195 @@ class DesktopSkills:
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 error=str(e),
             )
+
+    @staticmethod
+    def system_control(action: str) -> ExecutionResult:
+        """Controls system hardware settings: volume, mute, screenshot, display."""
+        start_time = time.perf_counter()
+        try:
+            if sys.platform == "darwin":
+                if action == "volume_up":
+                    cmd = "set volume output volume ((output volume of (get volume settings)) + 12)"
+                    subprocess.run(["osascript", "-e", cmd], check=True)
+                    msg = "Increased system volume."
+                elif action == "volume_down":
+                    cmd = "set volume output volume ((output volume of (get volume settings)) - 12)"
+                    subprocess.run(["osascript", "-e", cmd], check=True)
+                    msg = "Decreased system volume."
+                elif action == "mute":
+                    subprocess.run(["osascript", "-e", "set volume with output muted"], check=True)
+                    msg = "Muted system audio."
+                elif action == "unmute":
+                    subprocess.run(["osascript", "-e", "set volume without output muted"], check=True)
+                    msg = "Unmuted system audio."
+                elif action == "screenshot":
+                    desktop = Path.home() / "Desktop"
+                    out_path = desktop / f"Screenshot_{int(time.time())}.png"
+                    subprocess.run(["screencapture", "-x", str(out_path)], check=True)
+                    msg = f"Saved screenshot to Desktop: {out_path.name}"
+                else:
+                    msg = f"System control '{action}' executed."
+
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.EXECUTE_SHELL,
+                    output_message=msg,
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
+        except Exception as e:
+            return ExecutionResult(
+                step_id=1,
+                success=False,
+                action_type=ActionType.EXECUTE_SHELL,
+                output_message=f"System control failed: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
+            )
+
+    @staticmethod
+    def scroll(direction: str = "down", amount: int = 5) -> ExecutionResult:
+        """Scrolls the active window content."""
+        start_time = time.perf_counter()
+        try:
+            if sys.platform == "darwin":
+                try:
+                    import Quartz
+                    delta = -amount if direction == "down" else amount
+                    event = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, delta)
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+                except ImportError:
+                    # Fallback to key code Page Down (121) or Page Up (116)
+                    code = 121 if direction == "down" else 116
+                    subprocess.run(["osascript", "-e", f'tell application "System Events" to key code {code}'], capture_output=True)
+
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.SCROLL,
+                    output_message=f"Scrolled {direction}",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
+        except Exception as e:
+            return ExecutionResult(
+                step_id=1,
+                success=False,
+                action_type=ActionType.SCROLL,
+                output_message=f"Scroll failed: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
+            )
+
+    @staticmethod
+    def browser_control(action: str) -> ExecutionResult:
+        """Automates browser tabs, reloading, and navigation."""
+        key_map = {
+            "new_tab": ["command", "t"],
+            "close_tab": ["command", "w"],
+            "next_tab": ["control", "tab"],
+            "prev_tab": ["control", "shift", "tab"],
+            "refresh": ["command", "r"],
+        }
+        keys = key_map.get(action, ["command", "r"])
+        return DesktopSkills.press_hotkey(keys)
+
+    @staticmethod
+    def edit_action(action: str) -> ExecutionResult:
+        """Executes clipboard, selection, and document editing shortcuts."""
+        key_map = {
+            "copy": ["command", "c"],
+            "paste": ["command", "v"],
+            "cut": ["command", "x"],
+            "undo": ["command", "z"],
+            "redo": ["command", "shift", "z"],
+            "save": ["command", "s"],
+            "select_all": ["command", "a"],
+        }
+        keys = key_map.get(action, ["command", "s"])
+        return DesktopSkills.press_hotkey(keys)
+
+    @staticmethod
+    def insert_photo_into_doc(photo_query: str) -> ExecutionResult:
+        """Locates an image file on disk, copies it to clipboard, and pastes it into the active doc."""
+        start_time = time.perf_counter()
+        user_home = Path.home()
+        search_dirs = [user_home / "Pictures", user_home / "Downloads", user_home / "Desktop"]
+
+        found_img = None
+        for d in search_dirs:
+            try:
+                if d.exists():
+                    for ext in ["*.png", "*.jpg", "*.jpeg", "*.webp"]:
+                        for img in d.glob(ext):
+                            if not photo_query or photo_query.lower() in img.name.lower():
+                                found_img = img
+                                break
+                        if found_img:
+                            break
+            except (PermissionError, OSError):
+                continue
+            if found_img:
+                break
+
+        if not found_img:
+            return ExecutionResult(
+                step_id=1,
+                success=False,
+                action_type=ActionType.TYPE_TEXT,
+                output_message=f"No photo found matching '{photo_query}' in Pictures/Downloads/Desktop",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error="PhotoNotFound",
+            )
+
+        try:
+            if sys.platform == "darwin":
+                # Copy image file to macOS clipboard via AppleScript
+                as_cmd = f'''
+                set the clipboard to (read (POSIX file "{found_img.resolve()}") as JPEG picture)
+                '''
+                subprocess.run(["osascript", "-e", as_cmd], capture_output=True)
+                time.sleep(0.1)
+                # Paste into active document
+                DesktopSkills.press_hotkey(["command", "v"])
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.TYPE_TEXT,
+                    output_message=f"Copied and inserted '{found_img.name}' into active document.",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
+        except Exception as e:
+            return ExecutionResult(
+                step_id=1,
+                success=False,
+                action_type=ActionType.TYPE_TEXT,
+                output_message=f"Failed to insert photo: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
+            )
+
+    @staticmethod
+    def send_message_flow(app: str, contact: str, message: str) -> ExecutionResult:
+        """Brings messaging app to front, searches contact, and sends the message."""
+        start_time = time.perf_counter()
+        DesktopSkills.focus_app(app)
+        time.sleep(0.35)
+        # Search contact via Cmd+F
+        DesktopSkills.press_hotkey(["command", "f"])
+        time.sleep(0.2)
+        DesktopSkills.type_text(contact, press_enter=True)
+        time.sleep(0.35)
+        # Focus chat input, type message, and hit Return
+        DesktopSkills.type_text(message, press_enter=True)
+        return ExecutionResult(
+            step_id=1,
+            success=True,
+            action_type=ActionType.TYPE_TEXT,
+            output_message=f"Sent message to '{contact}' on {app.title()}: \"{message}\"",
+            latency_ms=(time.perf_counter() - start_time) * 1000,
+            state_mutated=True,
+        )
+
