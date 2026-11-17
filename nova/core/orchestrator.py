@@ -159,6 +159,37 @@ class AgentOrchestrator:
                     "app": resolved.parameters.get("app"),
                 },
             )
+        elif resolved.intent_type == "navigate_active_tab":
+            return PlannedAction(
+                step_id=1,
+                thought=resolved.thought,
+                action_type=ActionType.LAUNCH_APP,
+                parameters={
+                    "skill": "navigate_active_tab",
+                    "query": resolved.parameters["query"],
+                },
+            )
+        elif resolved.intent_type == "switch_tab":
+            return PlannedAction(
+                step_id=1,
+                thought=resolved.thought,
+                action_type=ActionType.KEY_COMBINATION,
+                parameters={
+                    "skill": "switch_tab",
+                    "tab_number": resolved.parameters["tab_number"],
+                },
+            )
+        elif resolved.intent_type == "type_in_app":
+            return PlannedAction(
+                step_id=1,
+                thought=resolved.thought,
+                action_type=ActionType.TYPE_TEXT,
+                parameters={
+                    "skill": "type_in_app",
+                    "app": resolved.parameters["app"],
+                    "text": resolved.parameters["text"],
+                },
+            )
         elif resolved.intent_type == "type_text":
             return PlannedAction(
                 step_id=1,
@@ -337,6 +368,12 @@ class AgentOrchestrator:
                 latency_ms=10.0,
                 error="ElementNotFound",
             )
+        elif skill == "navigate_active_tab":
+            return DesktopSkills.navigate_active_tab(action.parameters["query"])
+        elif skill == "switch_tab":
+            return DesktopSkills.switch_browser_tab(action.parameters["tab_number"])
+        elif skill == "type_in_app":
+            return DesktopSkills.type_in_app(action.parameters["text"], action.parameters["app"])
         elif skill == "type_text":
             return DesktopSkills.type_text(action.parameters["text"], press_enter=False)
         elif skill == "insert_photo":

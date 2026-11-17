@@ -63,8 +63,45 @@ class NaturalLanguageIntentResolver:
                 return ResolvedIntent("scroll", 0.90, {"direction": "up", "amount": 5}, "Scrolling up the active page.")
 
         # -------------------------------------------------------------
-        # 3. BROWSER CONTROLS (TABS, REFRESH, NAVIGATION)
+        # 3. BROWSER CONTROLS (TABS, NAVIGATION, ACTIVE TAB SEARCH)
         # -------------------------------------------------------------
+        # Active tab navigation: "open youtube on the tab", "search mrbeast on this tab", "go to youtube on this tab"
+        if any(phrase in text_lower for phrase in ["on the tab", "on this tab", "in this tab", "in the tab", "current tab", "this tab"]):
+            nav_query = text_clean
+            nav_query = re.sub(r"\b(on the tab|on this tab|in this tab|in the tab|current tab|this tab|open|go to|search for|search|look up)\b", "", nav_query, flags=re.IGNORECASE).strip()
+            if nav_query:
+                return ResolvedIntent(
+                    "navigate_active_tab",
+                    0.95,
+                    {"query": nav_query},
+                    f"Navigating active browser tab to '{nav_query}'."
+                )
+
+        # Tab index switching: "go to 1st tab", "go to 2nd tab", "switch to 3rd tab", "first tab", "tab 1"
+        tab_num_match = re.search(r"\b(go to|switch to|open)?\s*(?P<num>1st|2nd|3rd|4th|5th|6th|7th|8th|9th|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|last|[1-9])\s*(tab)?\b", text_lower)
+        if tab_num_match and ("tab" in tokens or "switch" in tokens or "go" in tokens):
+            num_str = tab_num_match.group("num").lower()
+            num_map = {
+                "1st": 1, "first": 1, "1": 1,
+                "2nd": 2, "second": 2, "2": 2,
+                "3rd": 3, "third": 3, "3": 3,
+                "4th": 4, "fourth": 4, "4": 4,
+                "5th": 5, "fifth": 5, "5": 5,
+                "6th": 6, "sixth": 6, "6": 6,
+                "7th": 7, "seventh": 7, "7": 7,
+                "8th": 8, "eighth": 8, "8": 8,
+                "9th": 9, "ninth": 9, "9": 9,
+                "last": 9,
+            }
+            tab_idx = num_map.get(num_str)
+            if tab_idx:
+                return ResolvedIntent(
+                    "switch_tab",
+                    0.95,
+                    {"tab_number": tab_idx},
+                    f"Switching to browser tab {tab_idx}."
+                )
+
         if any(w in tokens for w in ["tab", "tabs", "reload", "refresh"]):
             if "new" in tokens:
                 return ResolvedIntent("browser_control", 0.90, {"action": "new_tab"}, "Opening new browser tab.")
@@ -224,11 +261,28 @@ class NaturalLanguageIntentResolver:
                 )
 
         # -------------------------------------------------------------
-        # 9. DIRECT TYPING / DICTATION
-        # E.g. "type hello world", "write this is my report"
+        # 9. DIRECT TYPING / DICTATION / SEARCH BAR TYPING
+        # E.g. "type mrbeast on chrome", "type hello world", "dictate: this is a test"
         # -------------------------------------------------------------
+        # Check typing into specific app / search: "type mrbeast on chrome", "search mrbeast in chrome"
+        type_app_match = re.search(
+            r"^(type|write|search|enter)\s+(?P<text>.+?)\s+(on|in|into)\s+(?P<app>chrome|safari|browser|word|notes|whatsapp|google)",
+            text_clean,
+            flags=re.IGNORECASE,
+        )
+        if type_app_match:
+            app_raw = type_app_match.group("app").lower()
+            app_clean = "Google Chrome" if app_raw in ["chrome", "browser", "google"] else ("Microsoft Word" if app_raw == "word" else app_raw.title())
+            clean_typed = type_app_match.group("text").strip().strip("'\"")
+            return ResolvedIntent(
+                "type_in_app",
+                0.95,
+                {"app": app_clean, "text": clean_typed},
+                f"Entering '{clean_typed}' in {app_clean}."
+            )
+
         if any(w in tokens for w in ["type", "write", "dictate", "enter"]):
-            type_match = re.search(r"^(type|write|dictate|enter)\s+(?P<text>.+)", text, flags=re.IGNORECASE)
+            type_match = re.search(r"^(type\s+this[:\s]*|write\s+this[:\s]*|dictate[:\s]*|type[:\s]*|write[:\s]*|enter[:\s]*)\s*(?P<text>.+)", text, flags=re.IGNORECASE)
             if type_match:
                 content = type_match.group("text").strip()
                 return ResolvedIntent(
@@ -236,6 +290,15 @@ class NaturalLanguageIntentResolver:
                     0.90,
                     {"text": content},
                     f"Typing '{content}' into active document/field."
+                )
+            # Fallback
+            words_after = re.sub(r"^(type|write|dictate|enter)\s+", "", text, flags=re.IGNORECASE).strip()
+            if words_after:
+                return ResolvedIntent(
+                    "type_text",
+                    0.90,
+                    {"text": words_after},
+                    f"Typing '{words_after}' into active document/field."
                 )
 
         # -------------------------------------------------------------

@@ -110,21 +110,38 @@ class DesktopSkills:
         return False
 
     @staticmethod
-    def type_text(text: str, press_enter: bool = False) -> ExecutionResult:
-        """Types text cleanly into the currently focused input field."""
+    def type_text(text: str, press_enter: bool = False, use_clipboard: bool = False) -> ExecutionResult:
+        """Types text cleanly into the currently focused input field.
+
+        For sentences, punctuation, or dictation, uses pbcopy + Cmd+V for 100% fidelity.
+        """
         start_time = time.perf_counter()
         try:
             if sys.platform == "darwin":
-                # Escape quotes in text
-                escaped = text.replace('"', '\\"')
-                enter_cmd = 'key code 36' if press_enter else ''
-                script = f'''
-                tell application "System Events"
-                    keystroke "{escaped}"
-                    {enter_cmd}
-                end tell
-                '''
-                subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+                # For dictation, sentences, or special characters, use clipboard paste for 100% reliability
+                if use_clipboard or len(text) > 15 or any(c in text for c in ['"', "'", "\n", "\\", ",", ";"]):
+                    p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+                    p.communicate(text.encode("utf-8"))
+                    time.sleep(0.04)
+                    enter_cmd = 'key code 36' if press_enter else ''
+                    script = f'''
+                    tell application "System Events"
+                        keystroke "v" using command down
+                        {enter_cmd}
+                    end tell
+                    '''
+                    subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+                else:
+                    escaped = text.replace('"', '\\"')
+                    enter_cmd = 'key code 36' if press_enter else ''
+                    script = f'''
+                    tell application "System Events"
+                        keystroke "{escaped}"
+                        {enter_cmd}
+                    end tell
+                    '''
+                    subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+
                 return ExecutionResult(
                     step_id=1,
                     success=True,
@@ -139,6 +156,159 @@ class DesktopSkills:
                 success=False,
                 action_type=ActionType.TYPE_TEXT,
                 output_message=f"Failed to type text: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
+            )
+
+    @staticmethod
+    def type_in_app(text: str, app_name: Optional[str] = None, press_enter: bool = True) -> ExecutionResult:
+        """Focuses target application and enters text. In browsers, focuses search bar."""
+        if app_name:
+            DesktopSkills.focus_app(app_name)
+            time.sleep(0.3)
+            # If target is a browser (Chrome, Safari), focus the address/search bar first
+            if any(b in app_name.lower() for b in ["chrome", "safari", "browser"]):
+                DesktopSkills.press_hotkey(["command", "l"])
+                time.sleep(0.1)
+                return DesktopSkills.type_text(text, press_enter=True)
+        return DesktopSkills.type_text(text, press_enter=press_enter)
+
+    @staticmethod
+    def navigate_active_tab(target_query: str) -> ExecutionResult:
+        """Navigates the CURRENT active browser tab to a URL or YouTube/Google search without opening new tabs."""
+        start_time = time.perf_counter()
+        clean = target_query.strip().strip(".?!,'\"")
+
+        # Resolve destination URL
+        if clean.lower() in ["youtube", "youtube.com", "www.youtube.com"]:
+            url = "https://www.youtube.com"
+        elif "youtube" in clean.lower():
+            q = re.sub(r"\b(youtube|search|on|for|the|tab|this)\b", "", clean, flags=re.IGNORECASE).strip()
+            url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(q)}" if q else "https://www.youtube.com"
+        elif clean.startswith("http://") or clean.startswith("https://"):
+            url = clean
+        elif "." in clean and " " not in clean:
+            url = f"https://{clean}"
+        else:
+            url = f"https://www.google.com/search?q={urllib.parse.quote_plus(clean)}"
+
+        try:
+            if sys.platform == "darwin":
+                as_nav = f'''
+                tell application "System Events"
+                    set isChrome to (name of processes) contains "Google Chrome"
+                    set isSafari to (name of processes) contains "Safari"
+                end tell
+                if isChrome then
+                    tell application "Google Chrome"
+                        activate
+                        if (count of windows) > 0 then
+                            set URL of active tab of front window to "{url}"
+                            return "ok"
+                        end if
+                    end tell
+                else if isSafari then
+                    tell application "Safari"
+                        activate
+                        if (count of windows) > 0 then
+                            set URL of current tab of front window to "{url}"
+                            return "ok"
+                        end if
+                    end tell
+                end if
+                return "fallback"
+                '''
+                res = subprocess.run(["osascript", "-e", as_nav], capture_output=True, text=True)
+                if "ok" in res.stdout:
+                    return ExecutionResult(
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.LAUNCH_APP,
+                        output_message=f"Navigated active tab to {url}",
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
+                    )
+
+                # Fallback: Focus address bar (Cmd+L), type URL, hit Return
+                DesktopSkills.press_hotkey(["command", "l"])
+                time.sleep(0.1)
+                DesktopSkills.type_text(url, press_enter=True)
+                return ExecutionResult(
+                    step_id=1,
+                    success=True,
+                    action_type=ActionType.LAUNCH_APP,
+                    output_message=f"Navigated active tab to {url}",
+                    latency_ms=(time.perf_counter() - start_time) * 1000,
+                    state_mutated=True,
+                )
+        except Exception as e:
+            return ExecutionResult(
+                step_id=1,
+                success=False,
+                action_type=ActionType.LAUNCH_APP,
+                output_message=f"Failed to navigate tab: {e}",
+                latency_ms=(time.perf_counter() - start_time) * 1000,
+                error=str(e),
+            )
+
+    @staticmethod
+    def switch_browser_tab(tab_number: int) -> ExecutionResult:
+        """Switches to a specific tab index (1st tab, 2nd tab, 3rd tab) in Chrome/Safari."""
+        start_time = time.perf_counter()
+        try:
+            if sys.platform == "darwin":
+                script = f'''
+                tell application "System Events"
+                    set isChrome to (name of processes) contains "Google Chrome"
+                    set isSafari to (name of processes) contains "Safari"
+                end tell
+                if isChrome then
+                    tell application "Google Chrome"
+                        activate
+                        if (count of windows) > 0 then
+                            set active tab index of front window to {tab_number}
+                            return "ok"
+                        end if
+                    end tell
+                else if isSafari then
+                    tell application "Safari"
+                        activate
+                        if (count of windows) > 0 then
+                            set current tab of front window to tab {tab_number}
+                            return "ok"
+                        end if
+                    end tell
+                end if
+                return "fallback"
+                '''
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+                if "ok" in res.stdout:
+                    return ExecutionResult(
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.KEY_COMBINATION,
+                        output_message=f"Switched to tab {tab_number}",
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
+                    )
+
+                # Fallback via hotkey: Cmd + tab_number (Cmd+1, Cmd+2, etc.)
+                if 1 <= tab_number <= 9:
+                    DesktopSkills.press_hotkey(["command", str(tab_number)])
+                    return ExecutionResult(
+                        step_id=1,
+                        success=True,
+                        action_type=ActionType.KEY_COMBINATION,
+                        output_message=f"Switched to tab {tab_number} via Cmd+{tab_number}",
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        state_mutated=True,
+                    )
+        except Exception as e:
+            return ExecutionResult(
+                step_id=1,
+                success=False,
+                action_type=ActionType.KEY_COMBINATION,
+                output_message=f"Failed to switch to tab {tab_number}: {e}",
                 latency_ms=(time.perf_counter() - start_time) * 1000,
                 error=str(e),
             )

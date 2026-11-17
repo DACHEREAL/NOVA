@@ -27,6 +27,7 @@ class VoiceDaemon:
         self.sample_rate = sample_rate
         self.running = False
         self._whisper_model = None
+        self.dictation_mode = False
 
     def _get_whisper(self):
         if self._whisper_model is None:
@@ -156,6 +157,25 @@ class VoiceDaemon:
         clean_intent = re.sub(r"^(hey\s+)?(nova|no\s*a|no\s*v|no)[,;\s]+", "", transcript, flags=re.IGNORECASE).strip()
         if not clean_intent:
             clean_intent = transcript.strip()
+
+        # Handle Dictation Mode Toggle
+        lowered = clean_intent.lower().strip().strip(".?!,'\"")
+        if lowered in ["start dictation", "dictation mode", "start typing", "enable dictation"]:
+            self.dictation_mode = True
+            console.print("  [bold green]📝 Dictation Mode Active! Everything you speak will be typed into your cursor.[/bold green]")
+            console.print("  [dim]Say 'stop dictation' to return to normal voice commands.[/dim]\n")
+            return
+        elif lowered in ["stop dictation", "exit dictation", "stop typing", "end dictation", "disable dictation"]:
+            self.dictation_mode = False
+            console.print("  [bold yellow]🛑 Dictation Mode Deactivated. Returned to voice command mode.[/bold yellow]\n")
+            return
+
+        # If in Dictation Mode, directly type the spoken text into active cursor
+        if self.dictation_mode:
+            from nova.core.skills import DesktopSkills
+            DesktopSkills.type_text(clean_intent + " ", use_clipboard=True)
+            console.print(f"  [dim cyan]📝 Typed:[/dim cyan] [white]{clean_intent}[/white]\n")
+            return
 
         console.print(f"  [bold cyan]Executing:[/bold cyan] {clean_intent}")
 
