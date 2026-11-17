@@ -1,0 +1,17 @@
+pydantic>=2.6.0
+pyyaml>=6.0
+rich>=13.7.0
+numpy>=1.26.0
+onnxruntime>=1.17.0
+sounddevice>=0.4.6
+lancedb>=0.6.0
+fastapi>=0.110.0
+uvicorn>=0.28.0
+
+# Optional platform-specific dependencies:
+# macOS:
+# pyobjc-framework-ApplicationServices pyobjc-framework-Cocoa pyobjc-framework-Quartz pyobjc-framework-LocalAuthentication
+# Windows:
+# pywin32 comtypes
+# Linux:
+# pyatspi python-xlib

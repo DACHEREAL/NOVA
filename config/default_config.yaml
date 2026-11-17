@@ -1,0 +1,87 @@
+version: "1.0"
+agent:
+  name: "N.O.V.A."
+  full_name: "Native Operating Vector Assistant"
+  mode: "autonomous_supervised" # autonomous_supervised | passive_query | dry_run
+  max_react_steps: 12
+  loop_timeout_seconds: 60
+
+hardware:
+  preferred_backend: "auto" # auto | metal | directml | cuda | vulkan | cpu
+  unified_memory_budget_gb: 6.0
+  npu_acceleration: true
+
+grounding:
+  dual_engine_enabled: true
+  primary_engine: "universal_accessibility" # universal_accessibility | vision_som
+  visual_fallback_enabled: true
+  tree_max_depth: 8
+  filter_non_interactive_nodes: true
+  dpi_normalization: true
+  capture_rate_hz: 10
+
+sensory:
+  wake_word:
+    enabled: true
+    trigger: "nova"
+    engine: "openwakeword"
+    sensitivity: 0.65
+  vad:
+    engine: "silero_v5"
+    sample_rate: 16000
+    threshold: 0.5
+    min_speech_duration_ms: 250
+    min_silence_duration_ms: 300
+  stt:
+    engine: "sherpa_onnx" # sherpa_onnx | moonshine | whisper_cpp
+    model_size: "streaming_small"
+    quantization: "int8"
+    language: "en"
+  tts:
+    engine: "kokoro_82m" # kokoro_82m | piper
+    voice: "af_heart"
+    streaming: true
+    rate: 1.05
+
+reasoning:
+  dual_tier_routing: true
+  tier1_fast_model:
+    provider: "local_llamacpp"
+    model_name: "Qwen2.5-3B-Instruct-Q4_K_M"
+    context_window: 8192
+    temperature: 0.1
+  tier2_deep_model:
+    provider: "local_llamacpp"
+    model_name: "Qwen2.5-7B-Instruct-Q4_K_M"
+    context_window: 16384
+    temperature: 0.2
+  enforce_json_grammar: true
+
+memory:
+  engine: "lancedb"
+  storage_path: "~/.nova/memory"
+  vector_dimension: 384
+  embedding_model: "nomic-embed-text-v1.5"
+  hybrid_search: true
+  bm25_weight: 0.4
+  vector_weight: 0.6
+
+security:
+  strict_mode: true
+  biometric_gate_enabled: true
+  redact_passwords_from_dom: true
+  protected_paths:
+    - "~/.ssh"
+    - "~/.gnupg"
+    - "~/.aws"
+    - "~/.config/gcloud"
+    - "/etc/shadow"
+    - "/etc/sudoers"
+    - "C:\\Windows\\System32"
+  destructive_command_patterns:
+    - "rm -rf"
+    - "mkfs"
+    - "dd if="
+    - "format "
+    - "drop database"
+    - "truncate table"
